@@ -1,6 +1,8 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { formatUSD } from "@/lib/format";
+import { LOW_STOCK } from "@/lib/stock";
 import { DELIVERY_FEE, normalizePhone, paymentLabels, provinces, type PaymentMethod } from "@/lib/shop";
 import { getAdminClient } from "@/lib/supabase-admin";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -58,7 +60,7 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
   // យកតម្លៃពី database (មិនទុកចិត្តតម្លៃពី browser ទេ)
   const { data: rows, error: productError } = await db
     .from("products")
-    .select("slug, name_km, price, in_stock, is_active")
+    .select("slug, name_km, price, in_stock, is_active, stock")
     .in("slug", [...qtyBySlug.keys()]);
   if (productError) {
     console.error(productError);
@@ -70,6 +72,8 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
     const p = rows?.find((r) => r.slug === slug);
     if (!p || !p.is_active) return { ok: false, error: "ផលិតផលខ្លះមិនមានលក់ទៀតទេ សូមពិនិត្យកន្ត្រកម្តងទៀត" };
     if (!p.in_stock) return { ok: false, error: `${p.name_km} អស់ស្តុកហើយ សូមដកចេញពីកន្ត្រក` };
+    if (p.stock !== null && qty > p.stock)
+      return { ok: false, error: `${p.name_km} នៅសល់តែ ${p.stock} ប៉ុណ្ណោះ សូមកែចំនួនក្នុងកន្ត្រក` };
     items.push({ slug, name: p.name_km, price: Number(p.price), qty });
   }
 
@@ -102,6 +106,27 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
     return { ok: false, error: "មិនអាចរក្សាទុក order បានទេ សូមព្យាយាមម្តងទៀត" };
   }
 
+  // កាត់ស្តុក (តែផលិតផលដែលរាប់ចំនួន)
+  const stockAlerts: string[] = [];
+  let soldOut = false;
+  for (const item of items) {
+    const p = rows?.find((r) => r.slug === item.slug);
+    if (p?.stock === null || p?.stock === undefined) continue;
+    const { data: left, error: stockError } = await db.rpc("decrement_stock", { p_slug: item.slug, p_qty: item.qty });
+    if (stockError) {
+      console.error(stockError);
+      continue;
+    }
+    const remaining = typeof left === "number" ? left : Math.max(0, p.stock - item.qty);
+    if (remaining === 0) {
+      soldOut = true;
+      stockAlerts.push(`🔴 ${escapeHtml(item.name)} អស់ស្តុកហើយ`);
+    } else if (remaining <= LOW_STOCK) {
+      stockAlerts.push(`🟡 ${escapeHtml(item.name)} នៅសល់ ${remaining}`);
+    }
+  }
+  if (soldOut) revalidatePath("/", "layout"); // ឲ្យហាងបង្ហាញ "អស់ស្តុក" ភ្លាម
+
   // ជូនដំណឹងទៅក្រុម Order (បើផ្ញើមិនបាន order នៅតែរក្សាទុកក្នុង database)
   const e = escapeHtml;
   const lines = [
@@ -116,6 +141,7 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
     "",
     `💵 <b>សរុប ${formatUSD(total)}</b> · ${e(paymentLabels[payment])}`,
     note ? `📝 ${e(note)}` : null,
+    stockAlerts.length ? `\n⚠️ <b>ស្តុក</b>\n${stockAlerts.join("\n")}` : null,
   ].filter((l) => l !== null);
   await sendTelegram(process.env.TELEGRAM_ORDERS_CHAT_ID, lines.join("\n"));
 

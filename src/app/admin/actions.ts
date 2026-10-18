@@ -89,6 +89,12 @@ export async function saveProduct(form: FormData): Promise<Result<{ id: string }
     ingredients: orNull(text(form, "ingredients", 1500)),
     concerns: form.getAll("concerns").map(String).filter((c) => validConcerns.has(c as never)),
     in_stock: form.get("in_stock") === "on",
+    stock: (() => {
+      const raw = text(form, "stock", 6);
+      if (raw === "") return null; // ទុកទទេ = មិនរាប់ស្តុក
+      const n = Math.trunc(Number(raw));
+      return Number.isFinite(n) && n >= 0 ? Math.min(n, 99999) : null;
+    })(),
     is_active: form.get("is_active") === "on",
     sort_order: Number.isFinite(sortOrder) ? sortOrder : 0,
   };
@@ -143,6 +149,16 @@ export async function setProductFlag(
   if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
   refreshShop();
   return { ok: true, data: null };
+}
+
+export async function setStock(id: string, stock: number | null): Promise<Result<{ stock: number | null }>> {
+  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const value = stock === null ? null : Math.max(0, Math.min(99999, Math.trunc(stock)));
+  if (value !== null && !Number.isFinite(value)) return { ok: false, error: "ចំនួនមិនត្រឹមត្រូវ" };
+  const { error } = await getAdminClient().from("products").update({ stock: value }).eq("id", id);
+  if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
+  refreshShop();
+  return { ok: true, data: { stock: value } };
 }
 
 // លុបជារៀងរហូត — ប៊ូតុងនៅលើទំព័រនឹងសួរបញ្ជាក់ជាមុនសិន

@@ -182,8 +182,13 @@ export function ProductForm({ product }: { product?: AdminProduct }) {
 
       {/* ការកំណត់ */}
       <section className="flex flex-col gap-1 rounded-2xl bg-white p-4">
+        <label className={label}>
+          <span>ចំនួនក្នុងស្តុក <span className="font-normal text-muted">(ទុកទទេ = មិនរាប់)</span></span>
+          <input name="stock" inputMode="numeric" pattern="[0-9]*" defaultValue={product?.stock ?? ""} placeholder="ឧ. 20" className={input} />
+        </label>
+        <p className="mb-1 text-xs text-muted">ពេលមាន order ចំនួននឹងថយចុះដោយខ្លួនឯង · ដល់ 0 = អស់ស្តុក</p>
         <label className="flex min-h-12 cursor-pointer items-center justify-between gap-3">
-          <span>មានស្តុក</span>
+          <span>មានស្តុក <span className="text-xs text-muted">(សម្រាប់ផលិតផលដែលមិនរាប់ចំនួន)</span></span>
           <input type="checkbox" name="in_stock" defaultChecked={product?.in_stock ?? true} className="size-6 accent-leaf" />
         </label>
         <label className="flex min-h-12 cursor-pointer items-center justify-between gap-3">

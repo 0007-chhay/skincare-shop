@@ -15,6 +15,7 @@ export type AdminProduct = {
   imageUrl?: string;
   concerns: Concern[];
   in_stock: boolean;
+  stock: number | null;
   is_active: boolean;
   sort_order: number;
   how_to_use: string | null;
@@ -23,7 +24,7 @@ export type AdminProduct = {
 };
 
 const columns =
-  "id, slug, name_km, name_en, price, description, tag, tint, image, concerns, in_stock, is_active, sort_order, how_to_use, ingredients, size";
+  "id, slug, name_km, name_en, price, description, tag, tint, image, concerns, in_stock, stock, is_active, sort_order, how_to_use, ingredients, size";
 
 function withUrl(row: AdminProduct): AdminProduct {
   return { ...row, price: Number(row.price), imageUrl: productImageUrl(row.image) };
