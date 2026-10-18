@@ -9,6 +9,7 @@ export function AdminNav({ pendingOrders = 0 }: { pendingOrders?: number }) {
     { href: "/admin/orders", label: "បញ្ជាក់ Order", badge: pendingOrders },
     { href: "/admin/products", label: "ផលិតផល", badge: 0 },
     { href: "/admin/promos", label: "កូដបញ្ចុះតម្លៃ", badge: 0 },
+    { href: "/admin/finance", label: "Finance", badge: 0 },
   ];
   return (
     <nav aria-label="Admin" className="no-scrollbar mx-auto flex max-w-3xl gap-1 overflow-x-auto px-4 pb-2 text-sm">
@@ -28,7 +29,6 @@ export function AdminNav({ pendingOrders = 0 }: { pendingOrders?: number }) {
           </Link>
         );
       })}
-      <span className="shrink-0 rounded-full px-4 py-2 text-[#8AA197]">Finance · ឆាប់ៗ</span>
     </nav>
   );
 }

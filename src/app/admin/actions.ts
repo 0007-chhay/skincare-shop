@@ -393,3 +393,71 @@ export async function cancelOrder(id: number): Promise<Result> {
   refreshShop(); // ស្តុកអាចត្រឡប់ពី "អស់" មកវិញ
   return { ok: true, data: null };
 }
+
+// ───────────── Finance ─────────────
+
+const money = (v: unknown) => {
+  const n = Number(String(v ?? "").replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : NaN;
+};
+
+// បញ្ចូលការទិញចូល: +ស្តុក និងគណនាថ្លៃដើមមធ្យម (ក្នុង database ពេលតែមួយ)
+export async function recordPurchase(input: {
+  productId: string;
+  month: string; // YYYY-MM
+  cost: string;
+  other: string;
+  qty: string;
+}): Promise<Result> {
+  const user = await getAdminUser();
+  if (!user) return NOT_ALLOWED;
+
+  const cost = money(input.cost);
+  const other = input.other.trim() === "" ? 0 : money(input.other);
+  const qty = Math.trunc(Number(input.qty));
+  if (!/^\d{4}-\d{2}$/.test(input.month)) return { ok: false, error: "ខែមិនត្រឹមត្រូវ" };
+  if (!Number.isFinite(cost)) return { ok: false, error: "សូមដាក់ថ្លៃដើម" };
+  if (!Number.isFinite(other)) return { ok: false, error: "\"ផ្សេងៗ\" មិនត្រឹមត្រូវ" };
+  if (!Number.isFinite(qty) || qty < 1 || qty > 100000) return { ok: false, error: "សូមដាក់ចំនួនយកមក" };
+
+  const { error } = await getAdminClient().rpc("record_purchase", {
+    p_product_id: input.productId,
+    p_qty: qty,
+    p_cost: cost,
+    p_other: other,
+    p_month: `${input.month}-01`,
+    p_actor: user.email ?? null,
+  });
+  if (error) {
+    console.error("record_purchase:", error.message);
+    return { ok: false, error: "បញ្ចូលមិនបាន សូមព្យាយាមម្តងទៀត" };
+  }
+  revalidatePath("/admin/finance");
+  refreshShop();
+  return { ok: true, data: null };
+}
+
+// លុបការបញ្ចូលខុស → ដកស្តុកវិញ (ទំព័រសួរបញ្ជាក់ជាមុន)
+export async function deletePurchase(id: number): Promise<Result> {
+  const user = await getAdminUser();
+  if (!user) return NOT_ALLOWED;
+  const { error } = await getAdminClient().rpc("delete_purchase", { p_id: id, p_actor: user.email ?? null });
+  if (error) {
+    console.error("delete_purchase:", error.message);
+    return { ok: false, error: "លុបមិនបាន" };
+  }
+  revalidatePath("/admin/finance");
+  refreshShop();
+  return { ok: true, data: null };
+}
+
+// ថ្លៃដើមស្តុកចាស់ (ខែដំបូង) — មិនរាប់ជាចំណាយក្នុងខែនេះទេ
+export async function setAvgCost(productId: string, value: string): Promise<Result> {
+  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const cost = money(value);
+  if (!Number.isFinite(cost)) return { ok: false, error: "ថ្លៃដើមមិនត្រឹមត្រូវ" };
+  const { error } = await getAdminClient().from("products").update({ avg_cost: cost }).eq("id", productId);
+  if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
+  revalidatePath("/admin/finance");
+  return { ok: true, data: null };
+}

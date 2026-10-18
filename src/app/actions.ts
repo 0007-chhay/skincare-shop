@@ -15,8 +15,8 @@ const clean = (v: unknown, max: number) => (typeof v === "string" ? v.trim().sli
 
 // គណនាតម្លៃកន្ត្រកពី database (មិនទុកចិត្តតម្លៃពី browser ទេ)
 type CartLineInput = { slug: string; qty: number }[];
-type PricedItem = { slug: string; name: string; price: number; qty: number };
-type ProductRowLite = { id: string; slug: string; name_km: string; price: number; in_stock: boolean; is_active: boolean; stock: number | null };
+type PricedItem = { slug: string; name: string; price: number; qty: number; cost: number | null };
+type ProductRowLite = { id: string; slug: string; name_km: string; price: number; in_stock: boolean; is_active: boolean; stock: number | null; avg_cost: number | null };
 
 async function priceCart(lines: CartLineInput): Promise<Result<{ items: PricedItem[]; rows: ProductRowLite[]; subtotal: number }>> {
   // រួមបញ្ចូលផលិតផលដដែលៗ និងពិនិត្យចំនួន
@@ -32,21 +32,22 @@ async function priceCart(lines: CartLineInput): Promise<Result<{ items: PricedIt
   // យកតម្លៃពី database (មិនទុកចិត្តតម្លៃពី browser ទេ)
   const { data: rows, error: productError } = await db
     .from("products")
-    .select("id, slug, name_km, price, in_stock, is_active, stock")
+    .select("id, slug, name_km, price, in_stock, is_active, stock, avg_cost")
     .in("slug", [...qtyBySlug.keys()]);
   if (productError) {
     console.error(productError);
     return { ok: false, error: "មានបញ្ហាបច្ចេកទេស សូមព្យាយាមម្តងទៀត" };
   }
 
-  const items: { slug: string; name: string; price: number; qty: number }[] = [];
+  const items: PricedItem[] = [];
   for (const [slug, qty] of qtyBySlug) {
     const p = rows?.find((r) => r.slug === slug);
     if (!p || !p.is_active) return { ok: false, error: "ផលិតផលខ្លះមិនមានលក់ទៀតទេ សូមពិនិត្យកន្ត្រកម្តងទៀត" };
     if (!p.in_stock) return { ok: false, error: `${p.name_km} អស់ស្តុកហើយ សូមដកចេញពីកន្ត្រក` };
     if (p.stock !== null && qty > p.stock)
       return { ok: false, error: `${p.name_km} នៅសល់តែ ${p.stock} ប៉ុណ្ណោះ សូមកែចំនួនក្នុងកន្ត្រក` };
-    items.push({ slug, name: p.name_km, price: Number(p.price), qty });
+    // ចងចាំថ្លៃដើមនៅពេលលក់ (សម្រាប់ Finance)
+    items.push({ slug, name: p.name_km, price: Number(p.price), qty, cost: p.avg_cost === null ? null : Number(p.avg_cost) });
   }
 
   const subtotal = Math.round(items.reduce((s, i) => s + i.price * i.qty, 0) * 100) / 100;
