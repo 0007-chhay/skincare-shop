@@ -1,9 +1,10 @@
 import { cache } from "react";
+import type { Concern } from "./concerns";
 import { productImageUrl, supabase } from "./supabase";
 
-// ផលិតផលទាំងអស់ឥឡូវនៅក្នុង Supabase (តារាង products)
+export { concernLabel, concerns, type Concern } from "./concerns";
 
-export type Concern = "acne" | "dry" | "dark-spots" | "oily" | "sensitive";
+// ផលិតផលទាំងអស់ឥឡូវនៅក្នុង Supabase (តារាង products)
 
 export type Product = {
   slug: string;
@@ -16,16 +17,11 @@ export type Product = {
   image?: string; // URL រូបពី Supabase Storage
   concerns: Concern[];
   inStock: boolean;
+  howToUse?: string;
+  ingredients?: string;
+  size?: string;
 };
 
-export const concerns: { id: Concern | "all"; label: string }[] = [
-  { id: "all", label: "សម្រាប់អ្នក" },
-  { id: "acne", label: "ស្បែកមុន" },
-  { id: "dry", label: "ស្បែកស្ងួត" },
-  { id: "dark-spots", label: "ស្នាមខ្មៅ" },
-  { id: "oily", label: "ស្បែកខ្លាញ់" },
-  { id: "sensitive", label: "ងាយរលាក" },
-];
 
 type ProductRow = {
   slug: string;
@@ -38,6 +34,9 @@ type ProductRow = {
   image: string | null;
   concerns: string[];
   in_stock: boolean;
+  how_to_use: string | null;
+  ingredients: string | null;
+  size: string | null;
 };
 
 function toProduct(row: ProductRow): Product {
@@ -52,6 +51,9 @@ function toProduct(row: ProductRow): Product {
     image: productImageUrl(row.image),
     concerns: row.concerns as Concern[],
     inStock: row.in_stock,
+    howToUse: row.how_to_use ?? undefined,
+    ingredients: row.ingredients ?? undefined,
+    size: row.size ?? undefined,
   };
 }
 
@@ -59,10 +61,15 @@ function toProduct(row: ProductRow): Product {
 export const getProducts = cache(async (): Promise<Product[]> => {
   const { data, error } = await supabase
     .from("products")
-    .select("slug, name_km, name_en, price, description, tag, tint, image, concerns, in_stock")
+    .select("slug, name_km, name_en, price, description, tag, tint, image, concerns, in_stock, how_to_use, ingredients, size")
     .order("sort_order", { ascending: true })
     .order("created_at", { ascending: true });
 
   if (error) throw new Error(`ទាញផលិតផលមិនបាន: ${error.message}`);
   return (data as ProductRow[]).map(toProduct);
 });
+
+export async function getProduct(slug: string) {
+  const products = await getProducts();
+  return products.find((p) => p.slug === slug);
+}

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { concerns, type Concern, type Product } from "@/lib/products";
+import { concerns, type Concern } from "@/lib/concerns";
+import type { Product } from "@/lib/products";
 import { ProductCard } from "./ProductCard";
 
 export function ProductFeed({ products }: { products: Product[] }) {

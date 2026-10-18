@@ -7,7 +7,6 @@ import { BackIcon, TrashIcon } from "@/components/icons";
 import { useCart } from "@/lib/cart";
 import { formatUSD, toKhmerNumber } from "@/lib/format";
 
-// កន្ត្រកសាមញ្ញ — ជំហានទី ៣ នឹងបន្ថែមថ្លៃដឹក លេខកូដបញ្ចុះតម្លៃ និង checkout
 export default function CartPage() {
   const { items, count, subtotal, setQty, remove } = useCart();
 
@@ -41,7 +40,7 @@ export default function CartPage() {
               <div className="flex min-w-0 flex-1 flex-col justify-between gap-1.5">
                 <div className="flex justify-between gap-2">
                   <div>
-                    <h2 className="text-[15px] font-semibold leading-normal">{product.nameKm}</h2>
+                    <Link href={`/p/${slug}`} className="text-[15px] font-semibold leading-normal">{product.nameKm}</Link>
                     <p className="text-xs text-muted">{product.nameEn}</p>
                   </div>
                   <button onClick={() => remove(slug)} aria-label={`លុប ${product.nameKm}`} className="-mr-2 -mt-2 grid size-11 place-items-center text-muted">
@@ -66,12 +65,12 @@ export default function CartPage() {
         <div className="fixed inset-x-0 bottom-0 bg-ink pb-[max(env(safe-area-inset-bottom),16px)] text-white">
           <div className="mx-auto flex max-w-xl items-center justify-between gap-3 px-4 pt-3">
             <div>
-              <p className="text-[13px] text-[#B5CEC4]">សរុប · {toKhmerNumber(count)} មុខ</p>
+              <p className="text-[13px] text-[#B5CEC4]">សរុប · {toKhmerNumber(count)} មុខ · ដឹកឥតគិតថ្លៃ</p>
               <p className="text-lg font-semibold">{formatUSD(subtotal)}</p>
             </div>
-            <button disabled className="h-[50px] rounded-2xl bg-white px-6 font-semibold text-ink opacity-60">
-              បន្តទៅមុខ (ជំហានទី ៣)
-            </button>
+            <Link href="/checkout" className="flex h-[50px] items-center rounded-2xl bg-white px-6 font-semibold text-ink">
+              បន្តទៅមុខ
+            </Link>
           </div>
         </div>
       )}
