@@ -41,7 +41,7 @@ export default function CheckoutPage() {
       });
       if (res.ok) {
         setDone(true);
-        router.replace(`/thank-you?no=${res.data.orderId}&pm=${payment}`);
+        router.replace(`/thank-you?no=${res.data.orderId}&pm=${payment}&t=${res.data.total.toFixed(2)}`);
         clear();
       } else {
         setError(res.error);
@@ -110,7 +110,7 @@ export default function CheckoutPage() {
         <fieldset className="flex flex-col gap-2.5 rounded-[20px] bg-white p-4">
           <legend className="float-left mb-1 text-base font-semibold">វិធីបង់ប្រាក់</legend>
           {([
-            ["khqr", "KHQR", "ហាងនឹងផ្ញើ QR ឲ្យអ្នក · ABA, ACLEDA, Wing ..."],
+            ["khqr", "KHQR", "ស្កេន QR ក្រោយបញ្ជាទិញ · ABA, ACLEDA, Wing ..."],
             ["cod", "បង់ពេលទទួលទំនិញ", null],
           ] as const).map(([value, title, sub]) => (
             <label

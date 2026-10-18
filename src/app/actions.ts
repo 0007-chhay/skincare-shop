@@ -24,7 +24,7 @@ export type OrderInput = {
   website?: string; // honeypot — មនុស្សមើលមិនឃើញ មានតែ bot ប៉ុណ្ណោះដែលបំពេញ
 };
 
-export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: number }>> {
+export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: number; total: number }>> {
   if (input.website) return { ok: false, error: "មិនអាចបញ្ជាទិញបានទេ" };
 
   const name = clean(input.name, 80);
@@ -115,7 +115,7 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
   ].filter((l) => l !== null);
   await sendTelegram(process.env.TELEGRAM_ORDERS_CHAT_ID, lines.join("\n"));
 
-  return { ok: true, data: { orderId: order.id } };
+  return { ok: true, data: { orderId: order.id, total } };
 }
 
 // ───────────────────────── សំណួរ ─────────────────────────
