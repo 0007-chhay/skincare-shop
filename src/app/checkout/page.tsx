@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { placeOrder } from "@/app/actions";
+import { checkPromo, placeOrder } from "@/app/actions";
 import { BackIcon } from "@/components/icons";
 import { useCart } from "@/lib/cart";
 import { formatUSD, toKhmerNumber } from "@/lib/format";
@@ -20,7 +20,26 @@ export default function CheckoutPage() {
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [done, setDone] = useState(false);
-  const total = subtotal + DELIVERY_FEE;
+  const [promoInput, setPromoInput] = useState("");
+  const [promo, setPromo] = useState<{ code: string; discount: number } | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [checkingPromo, startPromo] = useTransition();
+  const discount = promo?.discount ?? 0;
+  const total = Math.max(0, subtotal - discount) + DELIVERY_FEE;
+
+  function applyPromo() {
+    setPromoError(null);
+    startPromo(async () => {
+      const res = await checkPromo(promoInput, items.map((i) => ({ slug: i.slug, qty: i.qty })));
+      if (res.ok) {
+        setPromo(res.data);
+        setPromoInput(res.data.code);
+      } else {
+        setPromo(null);
+        setPromoError(res.error);
+      }
+    });
+  }
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -38,6 +57,7 @@ export default function CheckoutPage() {
         note: String(f.get("note") ?? ""),
         website: String(f.get("website") ?? ""),
         payment,
+        promoCode: promo?.code,
       });
       if (res.ok) {
         setDone(true);
@@ -126,6 +146,32 @@ export default function CheckoutPage() {
           ))}
         </fieldset>
 
+        <section className="flex flex-col gap-2 rounded-[20px] bg-white p-4">
+          <label htmlFor="promo" className="text-base font-semibold">កូដបញ្ចុះតម្លៃ</label>
+          <div className="flex gap-2">
+            <input
+              id="promo"
+              value={promoInput}
+              onChange={(e) => { setPromoInput(e.target.value.toUpperCase()); if (promo) setPromo(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyPromo(); } }}
+              maxLength={30}
+              autoCapitalize="characters"
+              placeholder="ឧ. NEWYEAR10"
+              className={`${inputClass} uppercase`}
+            />
+            <button
+              type="button"
+              onClick={applyPromo}
+              disabled={checkingPromo || promoInput.trim().length < 3}
+              className="h-[50px] shrink-0 rounded-xl bg-ink px-5 text-[15px] font-semibold text-white disabled:opacity-40"
+            >
+              {checkingPromo ? "..." : "ប្រើ"}
+            </button>
+          </div>
+          {promo && <p role="status" className="text-sm text-leaf">✓ កូដ {promo.code} · បញ្ចុះ {formatUSD(promo.discount)}</p>}
+          {promoError && <p role="alert" className="text-sm text-[#A3261B]">{promoError}</p>}
+        </section>
+
         <section className="flex flex-col gap-2 rounded-[20px] bg-white p-4 text-[15px]">
           <h2 className="mb-1 text-base font-semibold">ការបញ្ជាទិញរបស់អ្នក</h2>
           {items.map((i) => (
@@ -134,6 +180,9 @@ export default function CheckoutPage() {
               <span className="whitespace-nowrap">{formatUSD(i.product.price * i.qty)}</span>
             </div>
           ))}
+          {discount > 0 && (
+            <div className="flex justify-between text-leaf"><span>បញ្ចុះតម្លៃ ({promo?.code})</span><span>−{formatUSD(discount)}</span></div>
+          )}
           <div className="flex justify-between text-muted"><span>ដឹកជញ្ជូន</span><span>ឥតគិតថ្លៃ</span></div>
           <div className="my-1 h-px bg-line" />
           <div className="flex justify-between text-lg font-semibold"><span>សរុប</span><span>{formatUSD(total)}</span></div>

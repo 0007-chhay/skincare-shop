@@ -4,7 +4,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getAdminUser, isAdminEmail } from "@/lib/admin-auth";
 import { concerns as concernList } from "@/lib/concerns";
+import { formatUSD } from "@/lib/format";
 import { getAdminClient } from "@/lib/supabase-admin";
+import { escapeHtml, sendTelegram } from "@/lib/telegram";
+import { normalizeCode } from "@/lib/promo";
 import { createAuthClient } from "@/lib/supabase-server";
 
 type Result<T = null> = { ok: true; data: T } | { ok: false; error: string };
@@ -64,7 +67,8 @@ async function uniqueSlug(base: string) {
 }
 
 export async function saveProduct(form: FormData): Promise<Result<{ id: string }>> {
-  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const user = await getAdminUser();
+  if (!user) return NOT_ALLOWED;
 
   const id = text(form, "id", 60);
   const nameKm = text(form, "name_km", 120);
@@ -119,11 +123,13 @@ export async function saveProduct(form: FormData): Promise<Result<{ id: string }
   }
 
   if (id) {
+    const { data: before } = await db.from("products").select("id, name_km, stock").eq("id", id).maybeSingle();
     const { error } = await db.from("products").update(row).eq("id", id);
     if (error) {
       console.error(error);
       return { ok: false, error: "រក្សាទុកមិនបាន សូមព្យាយាមម្តងទៀត" };
     }
+    if (before) await logStockChange(before, row.stock as number | null, "edit", user.email);
     refreshShop();
     return { ok: true, data: { id } };
   }
@@ -134,6 +140,8 @@ export async function saveProduct(form: FormData): Promise<Result<{ id: string }
     console.error(error);
     return { ok: false, error: "បន្ថែមមិនបាន សូមព្យាយាមម្តងទៀត" };
   }
+  if (typeof row.stock === "number" && row.stock > 0)
+    await logStockChange({ id: data.id, name_km: nameKm, stock: 0 }, row.stock, "edit", user.email);
   refreshShop();
   return { ok: true, data: { id: data.id } };
 }
@@ -151,14 +159,59 @@ export async function setProductFlag(
   return { ok: true, data: null };
 }
 
+// កត់ត្រាប្រវត្តិស្តុក (បើបរាជ័យ មិនរារាំងការរក្សាទុកទេ)
+async function logStockChange(
+  product: { id: string; name_km: string; stock: number | null },
+  newStock: number | null,
+  reason: "manual" | "edit",
+  actor: string | undefined,
+) {
+  if (newStock === null || newStock === product.stock) return;
+  const { error } = await getAdminClient().from("stock_movements").insert({
+    product_id: product.id,
+    product_name: product.name_km,
+    change: newStock - (product.stock ?? 0),
+    stock_after: newStock,
+    reason,
+    actor: actor ?? null,
+  });
+  if (error) console.error("stock log:", error);
+}
+
 export async function setStock(id: string, stock: number | null): Promise<Result<{ stock: number | null }>> {
-  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const user = await getAdminUser();
+  if (!user) return NOT_ALLOWED;
   const value = stock === null ? null : Math.max(0, Math.min(99999, Math.trunc(stock)));
   if (value !== null && !Number.isFinite(value)) return { ok: false, error: "ចំនួនមិនត្រឹមត្រូវ" };
-  const { error } = await getAdminClient().from("products").update({ stock: value }).eq("id", id);
+  const db = getAdminClient();
+  const { data: before } = await db.from("products").select("id, name_km, stock").eq("id", id).maybeSingle();
+  const { error } = await db.from("products").update({ stock: value }).eq("id", id);
   if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
+  if (before) await logStockChange(before, value, "manual", user.email);
   refreshShop();
   return { ok: true, data: { stock: value } };
+}
+
+export type StockMovement = {
+  id: number;
+  created_at: string;
+  change: number;
+  stock_after: number | null;
+  reason: "order" | "manual" | "edit" | "cancel" | "purchase";
+  order_id: number | null;
+  actor: string | null;
+};
+
+export async function getStockHistory(productId: string): Promise<Result<StockMovement[]>> {
+  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const { data, error } = await getAdminClient()
+    .from("stock_movements")
+    .select("id, created_at, change, stock_after, reason, order_id, actor")
+    .eq("product_id", productId)
+    .order("created_at", { ascending: false })
+    .limit(30);
+  if (error) return { ok: false, error: "ទាញប្រវត្តិមិនបាន" };
+  return { ok: true, data: (data ?? []) as StockMovement[] };
 }
 
 // លុបជារៀងរហូត — ប៊ូតុងនៅលើទំព័រនឹងសួរបញ្ជាក់ជាមុនសិន
@@ -168,5 +221,175 @@ export async function deleteProduct(id: string): Promise<Result> {
   const { error } = await getAdminClient().from("products").delete().eq("id", id);
   if (error) return { ok: false, error: "លុបមិនបាន" };
   refreshShop();
+  return { ok: true, data: null };
+}
+
+// ───────────── កូដបញ្ចុះតម្លៃ ─────────────
+
+export async function createPromo(form: FormData): Promise<Result> {
+  if (!(await getAdminUser())) return NOT_ALLOWED;
+
+  const code = normalizeCode(String(form.get("code") ?? ""));
+  const kind = form.get("kind") === "fixed" ? "fixed" : "percent";
+  const value = Number(String(form.get("value") ?? "").replace(/[$%,\s]/g, ""));
+  const min = Number(String(form.get("min_subtotal") ?? "0").replace(/[$,\s]/g, "") || 0);
+  const maxRaw = String(form.get("max_uses") ?? "").trim();
+  const expiresRaw = String(form.get("expires_at") ?? "").trim();
+
+  if (!/^[A-Z0-9_-]{3,30}$/.test(code)) return { ok: false, error: "កូដត្រូវមាន ៣–៣០ តួ (អក្សរអង់គ្លេស ឬលេខ)" };
+  if (!Number.isFinite(value) || value <= 0) return { ok: false, error: "សូមដាក់ចំនួនបញ្ចុះ" };
+  if (kind === "percent" && value > 100) return { ok: false, error: "ភាគរយមិនអាចលើស 100% ទេ" };
+  if (!Number.isFinite(min) || min < 0) return { ok: false, error: "ចំនួនទិញអប្បបរមាមិនត្រឹមត្រូវ" };
+  const maxUses = maxRaw === "" ? null : Math.trunc(Number(maxRaw));
+  if (maxUses !== null && (!Number.isFinite(maxUses) || maxUses < 1)) return { ok: false, error: "ចំនួនប្រើមិនត្រឹមត្រូវ" };
+  // ផុតកំណត់នៅចុងថ្ងៃ (ម៉ោងកម្ពុជា)
+  const expiresAt = /^\d{4}-\d{2}-\d{2}$/.test(expiresRaw) ? new Date(`${expiresRaw}T23:59:59+07:00`).toISOString() : null;
+
+  const { error } = await getAdminClient().from("promo_codes").insert({
+    code,
+    kind,
+    value: Math.round(value * 100) / 100,
+    min_subtotal: Math.round(min * 100) / 100,
+    max_uses: maxUses,
+    expires_at: expiresAt,
+  });
+  if (error) {
+    if (error.code === "23505") return { ok: false, error: `កូដ ${code} មានរួចហើយ` };
+    console.error(error);
+    return { ok: false, error: "បង្កើតមិនបាន សូមព្យាយាមម្តងទៀត" };
+  }
+  revalidatePath("/admin/promos");
+  return { ok: true, data: null };
+}
+
+export async function setPromoActive(id: number, active: boolean): Promise<Result> {
+  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const { error } = await getAdminClient().from("promo_codes").update({ is_active: active }).eq("id", id);
+  if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
+  revalidatePath("/admin/promos");
+  return { ok: true, data: null };
+}
+
+// លុបជារៀងរហូត — ទំព័រនឹងសួរបញ្ជាក់ជាមុនសិន (order ចាស់ៗនៅតែចងចាំឈ្មោះកូដ)
+export async function deletePromo(id: number): Promise<Result> {
+  if (!(await getAdminUser())) return NOT_ALLOWED;
+  const { error } = await getAdminClient().from("promo_codes").delete().eq("id", id);
+  if (error) return { ok: false, error: "លុបមិនបាន" };
+  revalidatePath("/admin/promos");
+  return { ok: true, data: null };
+}
+
+// ───────────── បញ្ជាក់ Order ─────────────
+
+function adminName(email: string | undefined) {
+  return (email ?? "admin").split("@")[0];
+}
+
+type OrderForAdmin = {
+  id: number;
+  status: string;
+  total: number;
+  items: { slug: string; name: string; qty: number }[];
+  promo_code: string | null;
+  telegram_message_id: number | null;
+  receipt_message_id: number | null;
+};
+
+async function loadOrder(id: number) {
+  const { data } = await getAdminClient()
+    .from("orders")
+    .select("id, status, total, items, promo_code, telegram_message_id, receipt_message_id")
+    .eq("id", id)
+    .maybeSingle();
+  return data as OrderForAdmin | null;
+}
+
+// ✅ បានបង់ → រាប់ជាចំណូល + សារ ៣ Reply ទៅវិក្កយបត្រ (ឬសារ order)
+export async function confirmOrderPaid(id: number): Promise<Result> {
+  const user = await getAdminUser();
+  if (!user) return NOT_ALLOWED;
+  const order = await loadOrder(id);
+  if (!order) return { ok: false, error: "រក order មិនឃើញ" };
+  if (order.status === "paid") return { ok: false, error: `Order #${id} បានបញ្ជាក់រួចហើយ` };
+  if (order.status === "cancelled") return { ok: false, error: `Order #${id} ត្រូវបានបោះបង់រួចហើយ` };
+
+  // update តែពេល status មិនទាន់ប្តូរ (ការពារ ២ នាក់ចុចព្រមគ្នា)
+  const { data: updated, error } = await getAdminClient()
+    .from("orders")
+    .update({ status: "paid", paid_at: new Date().toISOString(), confirmed_by: user.email ?? null })
+    .eq("id", id)
+    .not("status", "in", "(paid,cancelled)")
+    .select("id");
+  if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
+  if (!updated?.length) return { ok: false, error: `Order #${id} ត្រូវបានប្តូររួចហើយ សូម refresh` };
+
+  await sendTelegram(
+    process.env.TELEGRAM_ORDERS_CHAT_ID,
+    `✅ <b>Admin check · Order #${id}</b>\n💵 ${formatUSD(Number(order.total))} · ពិនិត្យដោយ ${escapeHtml(adminName(user.email))}`,
+    undefined,
+    order.receipt_message_id ?? order.telegram_message_id,
+  );
+
+  revalidatePath("/admin/orders");
+  return { ok: true, data: null };
+}
+
+// ✕ បោះបង់ → ស្តុកត្រឡប់វិញ + កូដបញ្ចុះតម្លៃរាប់វិញ + សារ ៣
+export async function cancelOrder(id: number): Promise<Result> {
+  const user = await getAdminUser();
+  if (!user) return NOT_ALLOWED;
+  const order = await loadOrder(id);
+  if (!order) return { ok: false, error: "រក order មិនឃើញ" };
+  if (order.status === "cancelled") return { ok: false, error: `Order #${id} ត្រូវបានបោះបង់រួចហើយ` };
+
+  const db = getAdminClient();
+  const { data: updated, error } = await db
+    .from("orders")
+    .update({ status: "cancelled", cancelled_at: new Date().toISOString(), confirmed_by: user.email ?? null })
+    .eq("id", id)
+    .neq("status", "cancelled")
+    .select("id");
+  if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
+  if (!updated?.length) return { ok: false, error: `Order #${id} ត្រូវបានប្តូររួចហើយ សូម refresh` };
+
+  // ដាក់ស្តុកត្រឡប់វិញ (តែផលិតផលដែលរាប់ចំនួន)
+  const movements: Record<string, unknown>[] = [];
+  for (const item of order.items ?? []) {
+    const { data: after, error: rpcError } = await db.rpc("restock", { p_slug: item.slug, p_qty: item.qty });
+    if (rpcError) {
+      console.error("restock:", rpcError.message);
+      continue;
+    }
+    if (typeof after !== "number") continue; // ផលិតផលមិនរាប់ស្តុក
+    const { data: product } = await db.from("products").select("id").eq("slug", item.slug).maybeSingle();
+    movements.push({
+      product_id: product?.id ?? null,
+      product_name: item.name,
+      change: item.qty,
+      stock_after: after,
+      reason: "cancel",
+      order_id: id,
+      actor: user.email ?? null,
+    });
+  }
+  if (movements.length) {
+    const { error: logError } = await db.from("stock_movements").insert(movements);
+    if (logError) console.error("stock log:", logError.message);
+  }
+
+  if (order.promo_code) {
+    const { error: promoError } = await db.rpc("release_promo", { p_code: order.promo_code });
+    if (promoError) console.error("release promo:", promoError.message);
+  }
+
+  await sendTelegram(
+    process.env.TELEGRAM_ORDERS_CHAT_ID,
+    `✕ <b>Admin បោះបង់ · Order #${id}</b>\n💵 ${formatUSD(Number(order.total))} · ដោយ ${escapeHtml(adminName(user.email))}${movements.length ? "\n📦 ស្តុកត្រូវបានដាក់ត្រឡប់វិញ" : ""}`,
+    undefined,
+    order.receipt_message_id ?? order.telegram_message_id,
+  );
+
+  revalidatePath("/admin/orders");
+  refreshShop(); // ស្តុកអាចត្រឡប់ពី "អស់" មកវិញ
   return { ok: true, data: null };
 }

@@ -1,11 +1,17 @@
 import Link from "next/link";
+import { AdminNav } from "@/components/admin/AdminNav";
 import { requireAdmin } from "@/lib/admin-auth";
+import { getAdminClient } from "@/lib/supabase-admin";
 import { signOut } from "../actions";
 
 export const dynamic = "force-dynamic";
 
 export default async function PanelLayout({ children }: { children: React.ReactNode }) {
   const user = await requireAdmin();
+  const { count: pendingOrders } = await getAdminClient()
+    .from("orders")
+    .select("id", { count: "exact", head: true })
+    .not("status", "in", "(paid,cancelled)");
 
   return (
     <>
@@ -19,11 +25,7 @@ export default async function PanelLayout({ children }: { children: React.ReactN
             </form>
           </div>
         </div>
-        <nav aria-label="Admin" className="mx-auto flex max-w-3xl gap-1 px-4 pb-2 text-sm">
-          <Link href="/admin/products" className="rounded-full bg-ink px-4 py-2 text-white">ផលិតផល</Link>
-          <span className="rounded-full px-4 py-2 text-[#8AA197]">Order · ឆាប់ៗ</span>
-          <span className="rounded-full px-4 py-2 text-[#8AA197]">សំណួរ · ឆាប់ៗ</span>
-        </nav>
+        <AdminNav pendingOrders={pendingOrders ?? 0} />
       </header>
       <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">{children}</div>
     </>

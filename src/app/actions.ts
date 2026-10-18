@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { formatUSD } from "@/lib/format";
+import { evaluatePromo, normalizeCode, promoErrors, type PromoCode } from "@/lib/promo";
 import { LOW_STOCK } from "@/lib/stock";
 import { DELIVERY_FEE, normalizePhone, paymentLabels, provinces, type PaymentMethod } from "@/lib/shop";
 import { getAdminClient } from "@/lib/supabase-admin";
@@ -11,6 +12,58 @@ import { escapeHtml, sendTelegram, sendTelegramPhoto } from "@/lib/telegram";
 type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
 const clean = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+
+// គណនាតម្លៃកន្ត្រកពី database (មិនទុកចិត្តតម្លៃពី browser ទេ)
+type CartLineInput = { slug: string; qty: number }[];
+type PricedItem = { slug: string; name: string; price: number; qty: number };
+type ProductRowLite = { id: string; slug: string; name_km: string; price: number; in_stock: boolean; is_active: boolean; stock: number | null };
+
+async function priceCart(lines: CartLineInput): Promise<Result<{ items: PricedItem[]; rows: ProductRowLite[]; subtotal: number }>> {
+  // រួមបញ្ចូលផលិតផលដដែលៗ និងពិនិត្យចំនួន
+  const qtyBySlug = new Map<string, number>();
+  for (const l of Array.isArray(lines) ? lines.slice(0, 50) : []) {
+    const qty = Math.floor(Number(l?.qty));
+    if (typeof l?.slug !== "string" || !Number.isFinite(qty) || qty < 1 || qty > 99) continue;
+    qtyBySlug.set(l.slug, Math.min(99, (qtyBySlug.get(l.slug) ?? 0) + qty));
+  }
+  if (qtyBySlug.size === 0) return { ok: false, error: "កន្ត្រករបស់អ្នកនៅទទេ" };
+
+  const db = getAdminClient();
+  // យកតម្លៃពី database (មិនទុកចិត្តតម្លៃពី browser ទេ)
+  const { data: rows, error: productError } = await db
+    .from("products")
+    .select("id, slug, name_km, price, in_stock, is_active, stock")
+    .in("slug", [...qtyBySlug.keys()]);
+  if (productError) {
+    console.error(productError);
+    return { ok: false, error: "មានបញ្ហាបច្ចេកទេស សូមព្យាយាមម្តងទៀត" };
+  }
+
+  const items: { slug: string; name: string; price: number; qty: number }[] = [];
+  for (const [slug, qty] of qtyBySlug) {
+    const p = rows?.find((r) => r.slug === slug);
+    if (!p || !p.is_active) return { ok: false, error: "ផលិតផលខ្លះមិនមានលក់ទៀតទេ សូមពិនិត្យកន្ត្រកម្តងទៀត" };
+    if (!p.in_stock) return { ok: false, error: `${p.name_km} អស់ស្តុកហើយ សូមដកចេញពីកន្ត្រក` };
+    if (p.stock !== null && qty > p.stock)
+      return { ok: false, error: `${p.name_km} នៅសល់តែ ${p.stock} ប៉ុណ្ណោះ សូមកែចំនួនក្នុងកន្ត្រក` };
+    items.push({ slug, name: p.name_km, price: Number(p.price), qty });
+  }
+
+  const subtotal = Math.round(items.reduce((s, i) => s + i.price * i.qty, 0) * 100) / 100;
+  return { ok: true, data: { items, rows: (rows ?? []) as ProductRowLite[], subtotal } };
+}
+
+// ពិនិត្យកូដបញ្ចុះតម្លៃ ពេលអតិថិជនចុច "ប្រើ" (មិនទាន់រាប់ចំនួនប្រើទេ)
+export async function checkPromo(code: string, lines: CartLineInput): Promise<Result<{ code: string; discount: number }>> {
+  const normalized = normalizeCode(String(code ?? "")).slice(0, 30);
+  if (normalized.length < 3) return { ok: false, error: "សូមវាយកូដបញ្ចុះតម្លៃ" };
+  const priced = await priceCart(lines);
+  if (!priced.ok) return priced;
+  const { data } = await getAdminClient().from("promo_codes").select("*").eq("code", normalized).maybeSingle();
+  const res = evaluatePromo(data as PromoCode | null, priced.data.subtotal);
+  if (!res.ok) return res;
+  return { ok: true, data: { code: normalized, discount: res.discount } };
+}
 
 // ───────────────────────── Order ─────────────────────────
 
@@ -24,6 +77,7 @@ export type OrderInput = {
   mapLink?: string;
   payment: PaymentMethod;
   note?: string;
+  promoCode?: string;
   website?: string; // honeypot — មនុស្សមើលមិនឃើញ មានតែ bot ប៉ុណ្ណោះដែលបំពេញ
 };
 
@@ -46,39 +100,24 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
   if (payment !== "khqr" && payment !== "cod") return { ok: false, error: "សូមជ្រើសវិធីបង់ប្រាក់" };
   if (mapLink && !/^https?:\/\//.test(mapLink)) return { ok: false, error: "Link ទីតាំងមិនត្រឹមត្រូវ" };
 
-  // រួមបញ្ចូលផលិតផលដដែលៗ និងពិនិត្យចំនួន
-  const qtyBySlug = new Map<string, number>();
-  for (const l of Array.isArray(input.lines) ? input.lines.slice(0, 50) : []) {
-    const qty = Math.floor(Number(l?.qty));
-    if (typeof l?.slug !== "string" || !Number.isFinite(qty) || qty < 1 || qty > 99) continue;
-    qtyBySlug.set(l.slug, Math.min(99, (qtyBySlug.get(l.slug) ?? 0) + qty));
-  }
-  if (qtyBySlug.size === 0) return { ok: false, error: "កន្ត្រករបស់អ្នកនៅទទេ" };
-
   const db = getAdminClient();
+  const priced = await priceCart(input.lines);
+  if (!priced.ok) return priced;
+  const { items, rows, subtotal } = priced.data;
 
-  // យកតម្លៃពី database (មិនទុកចិត្តតម្លៃពី browser ទេ)
-  const { data: rows, error: productError } = await db
-    .from("products")
-    .select("slug, name_km, price, in_stock, is_active, stock")
-    .in("slug", [...qtyBySlug.keys()]);
-  if (productError) {
-    console.error(productError);
-    return { ok: false, error: "មានបញ្ហាបច្ចេកទេស សូមព្យាយាមម្តងទៀត" };
+  // កូដបញ្ចុះតម្លៃ (ពិនិត្យ និងរាប់ចំនួនប្រើ នៅក្នុង database ក្នុងពេលតែមួយ)
+  const promoCode = input.promoCode ? normalizeCode(input.promoCode) : "";
+  let discount = 0;
+  if (promoCode) {
+    const { data: d, error: promoError } = await db.rpc("redeem_promo", { p_code: promoCode, p_subtotal: subtotal });
+    if (promoError) {
+      const key = Object.keys(promoErrors).find((k) => promoError.message.includes(k));
+      return { ok: false, error: key ? promoErrors[key] : "កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវ" };
+    }
+    discount = Math.round(Number(d) * 100) / 100;
   }
 
-  const items: { slug: string; name: string; price: number; qty: number }[] = [];
-  for (const [slug, qty] of qtyBySlug) {
-    const p = rows?.find((r) => r.slug === slug);
-    if (!p || !p.is_active) return { ok: false, error: "ផលិតផលខ្លះមិនមានលក់ទៀតទេ សូមពិនិត្យកន្ត្រកម្តងទៀត" };
-    if (!p.in_stock) return { ok: false, error: `${p.name_km} អស់ស្តុកហើយ សូមដកចេញពីកន្ត្រក` };
-    if (p.stock !== null && qty > p.stock)
-      return { ok: false, error: `${p.name_km} នៅសល់តែ ${p.stock} ប៉ុណ្ណោះ សូមកែចំនួនក្នុងកន្ត្រក` };
-    items.push({ slug, name: p.name_km, price: Number(p.price), qty });
-  }
-
-  const subtotal = Math.round(items.reduce((s, i) => s + i.price * i.qty, 0) * 100) / 100;
-  const total = subtotal + DELIVERY_FEE;
+  const total = Math.round((subtotal - discount + DELIVERY_FEE) * 100) / 100;
 
   const receiptKey = randomBytes(12).toString("hex");
 
@@ -96,6 +135,8 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
       note: note || null,
       items,
       subtotal,
+      discount,
+      promo_code: promoCode || null,
       delivery_fee: DELIVERY_FEE,
       total,
     })
@@ -108,6 +149,7 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
 
   // កាត់ស្តុក (តែផលិតផលដែលរាប់ចំនួន)
   const stockAlerts: string[] = [];
+  const movements: Record<string, unknown>[] = [];
   let soldOut = false;
   for (const item of items) {
     const p = rows?.find((r) => r.slug === item.slug);
@@ -118,6 +160,15 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
       continue;
     }
     const remaining = typeof left === "number" ? left : Math.max(0, p.stock - item.qty);
+    movements.push({
+      product_id: p.id,
+      product_name: item.name,
+      change: -item.qty,
+      stock_after: remaining,
+      reason: "order",
+      order_id: order.id,
+      actor: "order",
+    });
     if (remaining === 0) {
       soldOut = true;
       stockAlerts.push(`🔴 ${escapeHtml(item.name)} អស់ស្តុកហើយ`);
@@ -125,12 +176,16 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
       stockAlerts.push(`🟡 ${escapeHtml(item.name)} នៅសល់ ${remaining}`);
     }
   }
+  if (movements.length) {
+    const { error: logError } = await db.from("stock_movements").insert(movements);
+    if (logError) console.error("stock log:", logError);
+  }
   if (soldOut) revalidatePath("/", "layout"); // ឲ្យហាងបង្ហាញ "អស់ស្តុក" ភ្លាម
 
   // ជូនដំណឹងទៅក្រុម Order (បើផ្ញើមិនបាន order នៅតែរក្សាទុកក្នុង database)
   const e = escapeHtml;
   const lines = [
-    `🛍 <b>Order ថ្មី #${order.id}</b>`,
+    `🛍 <b>Order ថ្មី #${order.id}</b> · ${payment === "khqr" ? "⏳ រង់ចាំការបង់ប្រាក់" : "💵 បង់ពេលទទួល"}`,
     "",
     `👤 ${e(name)} · <a href="tel:${phone}">${phone}</a>`,
     telegram ? `✈️ <a href="https://t.me/${e(telegram)}">@${e(telegram)}</a>` : null,
@@ -139,11 +194,17 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
     "",
     ...items.map((i) => `• ${e(i.name)} × ${i.qty} = ${formatUSD(i.price * i.qty)}`),
     "",
+    discount > 0 ? `🎟 កូដ ${e(promoCode)} · បញ្ចុះ −${formatUSD(discount)}` : null,
     `💵 <b>សរុប ${formatUSD(total)}</b> · ${e(paymentLabels[payment])}`,
     note ? `📝 ${e(note)}` : null,
     stockAlerts.length ? `\n⚠️ <b>ស្តុក</b>\n${stockAlerts.join("\n")}` : null,
   ].filter((l) => l !== null);
-  await sendTelegram(process.env.TELEGRAM_ORDERS_CHAT_ID, lines.join("\n"));
+  const messageId = await sendTelegram(process.env.TELEGRAM_ORDERS_CHAT_ID, lines.join("\n"));
+  if (messageId) {
+    // ចងចាំសារ ១ ដើម្បីឲ្យ Admin Reply ពេលបញ្ជាក់
+    const { error: idError } = await db.from("orders").update({ telegram_message_id: messageId }).eq("id", order.id);
+    if (idError) console.error("save telegram id:", idError.message);
+  }
 
   return { ok: true, data: { orderId: order.id, total, receiptKey } };
 }
@@ -238,13 +299,13 @@ export async function uploadReceipt(form: FormData): Promise<Result<null>> {
   const sent = await sendTelegramPhoto(
     process.env.TELEGRAM_ORDERS_CHAT_ID,
     photo,
-    `🧾 <b>វិក្កយបត្រ Order #${order.id}</b>\n💵 ${formatUSD(Number(order.total))}\n👤 ${e(order.customer_name)} · ${e(order.phone)}`,
+    `🧾 <b>Order #${order.id} · បានបង់</b>\n💵 ${formatUSD(Number(order.total))}\n👤 ${e(order.customer_name)} · ${e(order.phone)}`,
   );
   if (!sent) return { ok: false, error: "ផ្ញើមិនបាន សូមព្យាយាមម្តងទៀត" };
 
   await db
     .from("orders")
-    .update({ receipt_count: order.receipt_count + 1, receipt_at: new Date().toISOString() })
+    .update({ receipt_count: order.receipt_count + 1, receipt_at: new Date().toISOString(), receipt_message_id: sent })
     .eq("id", order.id);
 
   return { ok: true, data: null };

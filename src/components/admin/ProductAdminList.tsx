@@ -7,6 +7,7 @@ import { setProductFlag, setStock } from "@/app/admin/actions";
 import type { AdminProduct } from "@/lib/admin-products";
 import { formatUSD } from "@/lib/format";
 import { stockLevel, stockStyle, type StockLevel } from "@/lib/stock";
+import { StockHistory } from "./StockHistory";
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -88,6 +89,7 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<StockLevel | "all">("all");
   const [error, setError] = useState<string | null>(null);
+  const [openHistory, setOpenHistory] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
   function patch(id: string, change: Partial<AdminProduct>, save: () => Promise<{ ok: boolean; error?: string }>) {
@@ -191,6 +193,19 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
                 <div className="flex items-center gap-2">
                   <span className="text-[13px] text-muted">ស្តុក</span>
                   <StockStepper stock={p.stock} onSave={(v) => updateStock(p.id, v)} />
+                  <button
+                    type="button"
+                    onClick={() => setOpenHistory(openHistory === p.id ? null : p.id)}
+                    aria-expanded={openHistory === p.id}
+                    aria-controls={`history-${p.id}`}
+                    className={`flex h-11 items-center gap-1.5 rounded-xl px-3 text-[13px] ${openHistory === p.id ? "bg-ink text-white" : "border-[1.5px] border-[#C3D6CD]"}`}
+                  >
+                    <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M3 3v5h5M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    ប្រវត្តិ
+                  </button>
                 </div>
                 <div className="flex flex-wrap gap-x-4">
                   {p.stock === null && (
@@ -199,6 +214,11 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
                   <Toggle label="បង្ហាញលើហាង" checked={p.is_active} onChange={(v) => updateFlag(p.id, "is_active", v)} />
                 </div>
               </div>
+              {openHistory === p.id && (
+                <div id={`history-${p.id}`} className="mt-2 rounded-xl bg-[#F4F7F5] px-3">
+                  <StockHistory productId={p.id} version={p.stock} />
+                </div>
+              )}
             </li>
           );
         })}
