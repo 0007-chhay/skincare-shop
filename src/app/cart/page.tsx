@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { BottleArt } from "@/components/BottleArt";
 import { BackIcon, TrashIcon } from "@/components/icons";
@@ -30,8 +31,12 @@ export default function CartPage() {
         ) : (
           items.map(({ slug, qty, product }) => (
             <article key={slug} className="flex gap-3 rounded-[20px] bg-white p-3">
-              <div className="grid size-[88px] shrink-0 place-items-center rounded-2xl" style={{ backgroundColor: product.tint }}>
-                <BottleArt tint={product.tint} className="h-[66px]" />
+              <div className="relative grid size-[88px] shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ backgroundColor: product.tint }}>
+                {product.image ? (
+                  <Image src={product.image} alt={product.nameKm} fill sizes="88px" className="object-cover" />
+                ) : (
+                  <BottleArt tint={product.tint} className="h-[66px]" />
+                )}
               </div>
               <div className="flex min-w-0 flex-1 flex-col justify-between gap-1.5">
                 <div className="flex justify-between gap-2">

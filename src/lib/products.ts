@@ -1,5 +1,7 @@
-// ទិន្នន័យគំរូ — ជំហានទី ២ យើងនឹងប្តូរទៅយកពី Supabase ជំនួសវិញ
-// តម្លៃខាងក្រោមគ្រាន់តែជាឧទាហរណ៍ សូមប្តូរជាតម្លៃពិត
+import { cache } from "react";
+import { productImageUrl, supabase } from "./supabase";
+
+// ផលិតផលទាំងអស់ឥឡូវនៅក្នុង Supabase (តារាង products)
 
 export type Concern = "acne" | "dry" | "dark-spots" | "oily" | "sensitive";
 
@@ -11,8 +13,9 @@ export type Product = {
   description: string;
   tag?: string;
   tint: string; // ពណ៌ផ្ទៃខាងក្រោយ ពេលមិនទាន់មានរូបថត
-  image?: string; // ឧ. "/products/vitamin-c.jpg"
+  image?: string; // URL រូបពី Supabase Storage
   concerns: Concern[];
+  inStock: boolean;
 };
 
 export const concerns: { id: Concern | "all"; label: string }[] = [
@@ -24,66 +27,42 @@ export const concerns: { id: Concern | "all"; label: string }[] = [
   { id: "sensitive", label: "ងាយរលាក" },
 ];
 
-export const products: Product[] = [
-  {
-    slug: "vitamin-c-serum",
-    nameKm: "សេរ៉ូមវីតាមីន C",
-    nameEn: "Vitamin C Serum",
-    price: 18,
-    description: "ជួយឲ្យស្បែកភ្លឺថ្លា និងបន្ថយស្នាមខ្មៅ។",
-    tag: "លក់ដាច់",
-    tint: "#F3E6D3",
-    concerns: ["dark-spots"],
-  },
-  {
-    slug: "sunscreen-spf50",
-    nameKm: "ឡេការពារកម្តៅថ្ងៃ SPF50",
-    nameEn: "Sunscreen SPF50",
-    price: 14,
-    description: "ស្រាល មិនស្អិត ល្អសម្រាប់អាកាសធាតុក្តៅ។",
-    tag: "ប្រើរាល់ថ្ងៃ",
-    tint: "#D7EAE2",
-    concerns: ["oily", "acne", "sensitive"],
-  },
-  {
-    slug: "sheet-mask",
-    nameKm: "ម៉ាសបិទមុខ",
-    nameEn: "Sheet Mask",
-    price: 3,
-    description: "ផ្តល់សំណើមភ្លាមៗ ក្នុង ១៥ នាទី។",
-    tag: "ថ្មី",
-    tint: "#F2DEDE",
-    concerns: ["dry"],
-  },
-  {
-    slug: "hydrating-toner",
-    nameKm: "ទឹកថ្នាំបំប៉នសំណើម",
-    nameEn: "Hydrating Toner",
-    price: 12,
-    description: "រៀបចំស្បែកឲ្យស្រូបសេរ៉ូមបានល្អ។",
-    tint: "#E3ECEA",
-    concerns: ["dry", "sensitive"],
-  },
-  {
-    slug: "gentle-cleanser",
-    nameKm: "សាប៊ូលាងមុខស្រាល",
-    nameEn: "Gentle Cleanser",
-    price: 10,
-    description: "សម្អាតជ្រៅ ដោយមិនធ្វើឲ្យស្បែកស្ងួត។",
-    tint: "#ECE8F2",
-    concerns: ["acne", "oily", "sensitive"],
-  },
-  {
-    slug: "night-cream",
-    nameKm: "ក្រែមលាបពេលយប់",
-    nameEn: "Night Cream",
-    price: 20,
-    description: "បំប៉នស្បែកពេលអ្នកគេង។",
-    tint: "#E6E2DC",
-    concerns: ["dry"],
-  },
-];
+type ProductRow = {
+  slug: string;
+  name_km: string;
+  name_en: string;
+  price: number | string;
+  description: string;
+  tag: string | null;
+  tint: string;
+  image: string | null;
+  concerns: string[];
+  in_stock: boolean;
+};
 
-export function getProduct(slug: string) {
-  return products.find((p) => p.slug === slug);
+function toProduct(row: ProductRow): Product {
+  return {
+    slug: row.slug,
+    nameKm: row.name_km,
+    nameEn: row.name_en,
+    price: Number(row.price),
+    description: row.description,
+    tag: row.tag ?? undefined,
+    tint: row.tint,
+    image: productImageUrl(row.image),
+    concerns: row.concerns as Concern[],
+    inStock: row.in_stock,
+  };
 }
+
+// cache() = ទាញពី database តែម្តងក្នុងមួយ request ទោះហៅច្រើនដង
+export const getProducts = cache(async (): Promise<Product[]> => {
+  const { data, error } = await supabase
+    .from("products")
+    .select("slug, name_km, name_en, price, description, tag, tint, image, concerns, in_stock")
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) throw new Error(`ទាញផលិតផលមិនបាន: ${error.message}`);
+  return (data as ProductRow[]).map(toProduct);
+});

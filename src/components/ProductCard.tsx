@@ -52,12 +52,18 @@ export function ProductCard({ product, priority }: { product: Product; priority?
         <p className="text-sm leading-7 text-muted">{product.description}</p>
 
         <div className="mt-auto grid grid-cols-2 gap-2">
-          <button
-            onClick={handleAdd}
-            className="h-12 rounded-2xl bg-leaf text-[15px] font-semibold text-white transition-colors active:bg-ink"
-          >
-            {added ? "បានដាក់ ✓" : "ដាក់ចូលកន្ត្រក"}
-          </button>
+          {product.inStock ? (
+            <button
+              onClick={handleAdd}
+              className="h-12 rounded-2xl bg-leaf text-[15px] font-semibold text-white transition-colors active:bg-ink"
+            >
+              {added ? "បានដាក់ ✓" : "ដាក់ចូលកន្ត្រក"}
+            </button>
+          ) : (
+            <button disabled className="h-12 rounded-2xl bg-line text-[15px] font-semibold text-muted">
+              អស់ស្តុក
+            </button>
+          )}
           <a
             href={telegramLink(`សួស្តី! ខ្ញុំចង់សួរអំពី ${product.nameKm} (${product.nameEn})`)}
             target="_blank"

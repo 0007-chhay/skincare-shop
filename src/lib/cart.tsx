@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
-import { getProduct, type Product } from "./products";
+import type { Product } from "./products";
 
 type CartLine = { slug: string; qty: number };
 type Action =
@@ -44,10 +44,10 @@ type CartContextValue = {
 const CartContext = createContext<CartContextValue | null>(null);
 const STORAGE_KEY = "cart-v1";
 
-export function CartProvider({ children }: { children: ReactNode }) {
+// products មកពី database (layout.tsx ផ្ញើមក)
+export function CartProvider({ products, children }: { products: Product[]; children: ReactNode }) {
   const [lines, dispatch] = useReducer(reducer, []);
 
-  // ទាញកន្ត្រកដែលបានរក្សាទុកពីមុន
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -62,8 +62,10 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [lines]);
 
   const value = useMemo<CartContextValue>(() => {
+    const bySlug = new Map(products.map((p) => [p.slug, p]));
+    // ផលិតផលដែលត្រូវបានលាក់ ឬអស់ពីហាង នឹងមិនបង្ហាញក្នុងកន្ត្រកទេ
     const items = lines
-      .map((l) => ({ ...l, product: getProduct(l.slug) }))
+      .map((l) => ({ ...l, product: bySlug.get(l.slug) }))
       .filter((l): l is CartLine & { product: Product } => Boolean(l.product));
     return {
       items,
@@ -74,7 +76,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       remove: (slug) => dispatch({ type: "remove", slug }),
       clear: () => dispatch({ type: "clear" }),
     };
-  }, [lines]);
+  }, [lines, products]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
