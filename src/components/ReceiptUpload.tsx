@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { uploadReceipt } from "@/app/actions";
 import { shrinkImage } from "@/lib/shrink-image";
 
-export function ReceiptUpload({ orderNo, receiptKey }: { orderNo: string; receiptKey: string }) {
+export function ReceiptUpload({ orderNo, receiptKey, onSent }: { orderNo: string; receiptKey: string; onSent?: () => void }) {
   const [photo, setPhoto] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
@@ -33,7 +33,10 @@ export function ReceiptUpload({ orderNo, receiptKey }: { orderNo: string; receip
     setError(null);
     startTransition(async () => {
       const res = await uploadReceipt(form);
-      if (res.ok) setSent(true);
+      if (res.ok) {
+        if (onSent) onSent();
+        else setSent(true);
+      }
       else setError(res.error);
     });
   }
