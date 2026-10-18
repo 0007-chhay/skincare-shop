@@ -2,20 +2,18 @@ import Image from "next/image";
 import Link from "next/link";
 import { formatUSD } from "@/lib/format";
 import { khqr } from "@/lib/payment";
-import { site } from "@/lib/site";
+import { ReceiptUpload } from "@/components/ReceiptUpload";
 
-type Props = { searchParams: Promise<{ no?: string; pm?: string; t?: string }> };
+type Props = { searchParams: Promise<{ no?: string; pm?: string; t?: string; k?: string }> };
 
 export const metadata = { title: "អរគុណ" };
 
 export default async function ThankYouPage({ searchParams }: Props) {
-  const { no, pm, t } = await searchParams;
+  const { no, pm, t, k } = await searchParams;
   const orderNo = /^\d+$/.test(no ?? "") ? no : null;
   const total = /^\d+(\.\d{1,2})?$/.test(t ?? "") ? Number(t) : null;
   const isKhqr = pm === "khqr";
-
-  const receiptMessage = `សួស្តី! ខ្ញុំបានបង់ប្រាក់សម្រាប់ Order #${orderNo ?? ""}${total !== null ? ` (${formatUSD(total)})` : ""}។ នេះជារូបវិក្កយបត្រ៖`;
-  const receiptLink = `https://t.me/${site.telegram}?text=${encodeURIComponent(receiptMessage)}`;
+  const receiptKey = /^[0-9a-f]{24}$/.test(k ?? "") ? k : null;
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-xl flex-col items-center gap-5 px-5 py-10 text-center">
@@ -51,19 +49,12 @@ export default async function ThankYouPage({ searchParams }: Props) {
           <ol className="flex w-full flex-col gap-2 rounded-2xl bg-mint p-4 text-left text-sm leading-7">
             <li>១. ស្កេន QR ដោយកម្មវិធីធនាគារណាមួយ (ABA, ACLEDA, Wing ...)</li>
             <li>២. បញ្ចូលចំនួនទឹកប្រាក់{total !== null && <> <b>{formatUSD(total)}</b></>}{orderNo && <> ហើយសរសេរ <b>#{orderNo}</b> ក្នុងកំណត់ចំណាំ</>}</li>
-            <li>៣. ផ្ញើរូបវិក្កយបត្រមកហាង</li>
+            <li>៣. ថតរូបអេក្រង់វិក្កយបត្រ ហើយផ្ញើនៅខាងក្រោម</li>
           </ol>
           <p className="text-xs leading-6 text-muted">
             បើបើកនៅលើទូរស័ព្ទ: ថតរូបអេក្រង់ ឬចុចឲ្យជាប់លើ QR ដើម្បីរក្សាទុក រួចជ្រើស “ស្កេនពីរូបភាព” ក្នុងកម្មវិធីធនាគារ។
           </p>
-          <a
-            href={receiptLink}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex h-12 w-full items-center justify-center rounded-2xl bg-leaf font-semibold text-white"
-          >
-            ផ្ញើរូបវិក្កយបត្រតាម Telegram
-          </a>
+          {orderNo && receiptKey && <ReceiptUpload orderNo={orderNo} receiptKey={receiptKey} />}
         </section>
       ) : (
         <p className="max-w-sm leading-8 text-muted">

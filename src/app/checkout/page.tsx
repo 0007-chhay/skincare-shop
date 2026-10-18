@@ -41,7 +41,7 @@ export default function CheckoutPage() {
       });
       if (res.ok) {
         setDone(true);
-        router.replace(`/thank-you?no=${res.data.orderId}&pm=${payment}&t=${res.data.total.toFixed(2)}`);
+        router.replace(`/thank-you?no=${res.data.orderId}&pm=${payment}&t=${res.data.total.toFixed(2)}&k=${res.data.receiptKey}`);
         clear();
       } else {
         setError(res.error);

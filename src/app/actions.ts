@@ -3,7 +3,8 @@
 import { formatUSD } from "@/lib/format";
 import { DELIVERY_FEE, normalizePhone, paymentLabels, provinces, type PaymentMethod } from "@/lib/shop";
 import { getAdminClient } from "@/lib/supabase-admin";
-import { escapeHtml, sendTelegram } from "@/lib/telegram";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { escapeHtml, sendTelegram, sendTelegramPhoto } from "@/lib/telegram";
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -24,7 +25,7 @@ export type OrderInput = {
   website?: string; // honeypot — មនុស្សមើលមិនឃើញ មានតែ bot ប៉ុណ្ណោះដែលបំពេញ
 };
 
-export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: number; total: number }>> {
+export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: number; total: number; receiptKey: string }>> {
   if (input.website) return { ok: false, error: "មិនអាចបញ្ជាទិញបានទេ" };
 
   const name = clean(input.name, 80);
@@ -75,9 +76,12 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
   const subtotal = Math.round(items.reduce((s, i) => s + i.price * i.qty, 0) * 100) / 100;
   const total = subtotal + DELIVERY_FEE;
 
+  const receiptKey = randomBytes(12).toString("hex");
+
   const { data: order, error: insertError } = await db
     .from("orders")
     .insert({
+      receipt_token: receiptKey,
       customer_name: name,
       phone,
       telegram: telegram || null,
@@ -115,7 +119,7 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
   ].filter((l) => l !== null);
   await sendTelegram(process.env.TELEGRAM_ORDERS_CHAT_ID, lines.join("\n"));
 
-  return { ok: true, data: { orderId: order.id, total } };
+  return { ok: true, data: { orderId: order.id, total, receiptKey } };
 }
 
 // ───────────────────────── សំណួរ ─────────────────────────
@@ -171,6 +175,51 @@ export async function askQuestion(input: QuestionInput): Promise<Result<null>> {
     // bot សំណួរ (បើមិនបានដាក់ នឹងប្រើ bot order ជំនួស)
     process.env.TELEGRAM_QUESTIONS_BOT_TOKEN,
   );
+
+  return { ok: true, data: null };
+}
+
+// ───────────────────────── វិក្កយបត្រ ─────────────────────────
+
+const MAX_RECEIPTS = 5;
+
+export async function uploadReceipt(form: FormData): Promise<Result<null>> {
+  const orderId = Number(form.get("no"));
+  const key = String(form.get("k") ?? "");
+  const photo = form.get("photo");
+
+  if (!Number.isInteger(orderId) || orderId < 1 || !/^[0-9a-f]{24}$/.test(key))
+    return { ok: false, error: "Link នេះមិនត្រឹមត្រូវ សូមផ្ញើវិក្កយបត្រតាម Telegram ជំនួសវិញ" };
+  if (!(photo instanceof File) || photo.size === 0) return { ok: false, error: "សូមជ្រើសរូបវិក្កយបត្រ" };
+  if (!photo.type.startsWith("image/")) return { ok: false, error: "ឯកសារនេះមិនមែនជារូបភាពទេ" };
+  if (photo.size > 4 * 1024 * 1024) return { ok: false, error: "រូបធំពេក សូមថតរូបអេក្រង់ម្តងទៀត" };
+
+  const db = getAdminClient();
+  const { data: order } = await db
+    .from("orders")
+    .select("id, receipt_token, receipt_count, total, customer_name, phone")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  const valid =
+    order?.receipt_token &&
+    order.receipt_token.length === key.length &&
+    timingSafeEqual(Buffer.from(order.receipt_token), Buffer.from(key));
+  if (!order || !valid) return { ok: false, error: "រក order នេះមិនឃើញទេ" };
+  if (order.receipt_count >= MAX_RECEIPTS) return { ok: false, error: "បានផ្ញើវិក្កយបត្រគ្រប់គ្រាន់ហើយ ហាងនឹងទាក់ទងអ្នកឆាប់ៗ" };
+
+  const e = escapeHtml;
+  const sent = await sendTelegramPhoto(
+    process.env.TELEGRAM_ORDERS_CHAT_ID,
+    photo,
+    `🧾 <b>វិក្កយបត្រ Order #${order.id}</b>\n💵 ${formatUSD(Number(order.total))}\n👤 ${e(order.customer_name)} · ${e(order.phone)}`,
+  );
+  if (!sent) return { ok: false, error: "ផ្ញើមិនបាន សូមព្យាយាមម្តងទៀត" };
+
+  await db
+    .from("orders")
+    .update({ receipt_count: order.receipt_count + 1, receipt_at: new Date().toISOString() })
+    .eq("id", order.id);
 
   return { ok: true, data: null };
 }

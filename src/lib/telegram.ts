@@ -23,3 +23,24 @@ export async function sendTelegram(chatId: string | undefined, html: string, bot
     return false;
   }
 }
+
+export async function sendTelegramPhoto(chatId: string | undefined, photo: Blob, captionHtml: string, botToken?: string) {
+  const token = botToken || process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !chatId) {
+    console.warn("Telegram: ខ្វះ TELEGRAM_BOT_TOKEN ឬ chat id — មិនបានផ្ញើរូបទេ");
+    return false;
+  }
+  try {
+    const body = new FormData();
+    body.set("chat_id", chatId);
+    body.set("caption", captionHtml);
+    body.set("parse_mode", "HTML");
+    body.set("photo", photo, "receipt.jpg");
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: "POST", body });
+    if (!res.ok) console.error("Telegram error:", res.status, await res.text());
+    return res.ok;
+  } catch (err) {
+    console.error("Telegram error:", err);
+    return false;
+  }
+}
