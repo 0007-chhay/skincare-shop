@@ -2,8 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRef, useState, useTransition } from "react";
-import { setProductFlag, setStock } from "@/app/admin/actions";
+import { useState, useTransition } from "react";
+import { adjustStock, setProductFlag, type AdjustReason } from "@/app/admin/actions";
 import type { AdminProduct } from "@/lib/admin-products";
 import { formatUSD } from "@/lib/format";
 import { stockLevel, stockStyle, type StockLevel } from "@/lib/stock";
@@ -30,48 +30,137 @@ function StockBadge({ stock }: { stock: number | null }) {
   );
 }
 
-// −  [ 12 ]  +   (ចុចលេខដើម្បីវាយចំនួនថ្មី)
-function StockStepper({ stock, onSave }: { stock: number | null; onSave: (v: number | null) => void }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const value = stock ?? 0;
+// ស្តុក = លេខអានតែប៉ុណ្ណោះ (ស្តុកចូលថ្មី ត្រូវបញ្ចូលក្នុង Finance → ទិញចូល)
+function StockNumber({ stock }: { stock: number | null }) {
+  return (
+    <span
+      aria-label="ចំនួនក្នុងស្តុក"
+      className="flex h-11 min-w-14 items-center justify-center rounded-xl bg-[#F4F7F5] px-3 text-base font-bold"
+    >
+      {stock === null ? "—" : stock}
+    </span>
+  );
+}
 
-  function commit() {
-    if (draft === null) return;
-    const trimmed = draft.trim();
-    setDraft(null);
-    if (trimmed === "") return;
-    const n = Math.max(0, Math.trunc(Number(trimmed)));
-    if (Number.isFinite(n) && n !== stock) onSave(n);
+const adjustOptions: { id: AdjustReason; label: string; mode: "remove" | "set" }[] = [
+  { id: "damaged", label: "ខូច", mode: "remove" },
+  { id: "lost", label: "បាត់", mode: "remove" },
+  { id: "count", label: "រាប់ស្តុកកែ", mode: "set" },
+];
+
+// ផ្ទាំងកែតម្រូវស្តុក: ជ្រើសមូលហេតុ → ដាក់ចំនួន → ឃើញលទ្ធផលមុនរក្សាទុក
+function StockAdjustPanel({
+  id,
+  stock,
+  onDone,
+  onCancel,
+}: {
+  id: string;
+  stock: number;
+  onDone: (stock: number) => void;
+  onCancel: () => void;
+}) {
+  const [reason, setReason] = useState<AdjustReason | null>(null);
+  const [amount, setAmount] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  const opt = adjustOptions.find((o) => o.id === reason);
+  const n = amount === "" ? null : Number(amount);
+  const next = opt && n !== null ? (opt.mode === "set" ? n : stock - n) : null;
+  const valid =
+    opt !== undefined &&
+    n !== null &&
+    next !== null &&
+    next >= 0 &&
+    next !== stock &&
+    (opt.mode === "set" || n >= 1);
+  const diff = next === null ? 0 : next - stock;
+
+  function save() {
+    if (!reason || n === null || !valid) return;
+    setError(null);
+    startTransition(async () => {
+      const res = await adjustStock(id, reason, n);
+      if (res.ok) onDone(res.data.stock);
+      else setError(res.error);
+    });
   }
 
   return (
-    <div className="flex h-11 items-center rounded-xl border-[1.5px] border-[#C3D6CD] bg-white">
-      <button
-        type="button"
-        aria-label="បន្ថយស្តុក ១"
-        disabled={stock === null || value <= 0}
-        onClick={() => onSave(value - 1)}
-        className="h-full w-11 text-xl disabled:opacity-30"
-      >
-        −
-      </button>
-      <input
-        ref={inputRef}
-        aria-label="ចំនួនក្នុងស្តុក"
-        inputMode="numeric"
-        pattern="[0-9]*"
-        value={draft ?? (stock === null ? "" : String(stock))}
-        placeholder="—"
-        onFocus={(e) => { setDraft(stock === null ? "" : String(stock)); e.target.select(); }}
-        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === "Enter") inputRef.current?.blur(); }}
-        className="h-full w-14 bg-transparent text-center text-base font-semibold focus:outline-none"
-      />
-      <button type="button" aria-label="បន្ថែមស្តុក ១" onClick={() => onSave(value + 1)} className="h-full w-11 text-xl">
-        +
-      </button>
+    <div className="mt-2 flex flex-col gap-3 rounded-xl bg-[#F4F7F5] p-3">
+      <div>
+        <p className="mb-1.5 text-[13px] font-semibold">មូលហេតុកែតម្រូវ</p>
+        <div role="radiogroup" aria-label="មូលហេតុ" className="flex flex-wrap gap-2">
+          {adjustOptions.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={reason === o.id}
+              onClick={() => { setReason(o.id); setAmount(""); setError(null); }}
+              className={`h-11 rounded-full px-4 text-sm ${reason === o.id ? "bg-ink text-white" : "border-[1.5px] border-[#C3D6CD] bg-white"}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {opt && (
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-semibold">
+            {opt.mode === "remove" ? `ចំនួនដែល${opt.label} (ដកចេញពីស្តុក)` : "ចំនួនពិតដែលរាប់បាន"}
+          </span>
+          <input
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, "").slice(0, 5))}
+            placeholder={opt.mode === "remove" ? "ឧ. 1" : String(stock)}
+            className="h-12 rounded-xl border-[1.5px] border-[#C3D6CD] bg-white px-4 text-base focus:border-leaf focus:outline-none"
+          />
+        </label>
+      )}
+
+      {opt && n !== null && next !== null && (
+        <p className="text-sm" aria-live="polite">
+          {next < 0 ? (
+            <span className="text-[#A3261B]">ស្តុកមានតែ {stock} មិនអាចដក {n} បានទេ</span>
+          ) : diff === 0 ? (
+            <span className="text-muted">ស្តុកដូចដែលមានស្រាប់</span>
+          ) : (
+            <>
+              ស្តុក {stock} → <b>{next}</b>{" "}
+              <span className={diff > 0 ? "text-[#163F7A]" : "text-[#8A1C12]"}>
+                ({diff > 0 ? "+" : "−"}{Math.abs(diff)})
+              </span>
+            </>
+          )}
+        </p>
+      )}
+
+      {error && <p role="alert" className="text-sm text-[#A3261B]">{error}</p>}
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={save}
+          disabled={!valid || pending}
+          className="h-11 flex-1 rounded-xl bg-leaf font-semibold text-white disabled:opacity-40"
+        >
+          {pending ? "កំពុងរក្សាទុក..." : "រក្សាទុក"}
+        </button>
+        <button type="button" onClick={onCancel} disabled={pending} className="h-11 rounded-xl border-[1.5px] border-[#C3D6CD] bg-white px-4 text-sm">
+          បោះបង់
+        </button>
+      </div>
+
+      <p className="text-xs leading-5 text-muted">
+        ទំនិញទិញចូលថ្មី សូមបញ្ចូលក្នុង{" "}
+        <Link href="/admin/finance" className="font-semibold text-leaf underline">Finance → ទិញចូល</Link>
+        {" "}(ដើម្បីឱ្យថ្លៃដើម និងចំណេញត្រឹមត្រូវ)។
+      </p>
     </div>
   );
 }
@@ -90,6 +179,7 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
   const [filter, setFilter] = useState<StockLevel | "all">("all");
   const [error, setError] = useState<string | null>(null);
   const [openHistory, setOpenHistory] = useState<string | null>(null);
+  const [openAdjust, setOpenAdjust] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
   function patch(id: string, change: Partial<AdminProduct>, save: () => Promise<{ ok: boolean; error?: string }>) {
@@ -108,8 +198,12 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
   const updateFlag = (id: string, flag: "in_stock" | "is_active", value: boolean) =>
     patch(id, { [flag]: value }, () => setProductFlag(id, flag, value));
 
-  const updateStock = (id: string, stock: number | null) =>
-    patch(id, { stock, ...(stock !== null ? { in_stock: stock > 0 } : {}) }, () => setStock(id, stock));
+  // បន្ទាប់ពីកែតម្រូវស្តុកជោគជ័យ (server បានរក្សាទុកហើយ)
+  const onAdjusted = (id: string, stock: number) => {
+    setItems((list) => list.map((p) => (p.id === id ? { ...p, stock, in_stock: stock > 0 } : p)));
+    setOpenAdjust(null);
+    setError(null);
+  };
 
   const counts = items.reduce<Record<string, number>>((acc, p) => {
     const lvl = stockLevel(p.stock);
@@ -192,10 +286,21 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
               <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-line pt-2">
                 <div className="flex items-center gap-2">
                   <span className="text-[13px] text-muted">ស្តុក</span>
-                  <StockStepper stock={p.stock} onSave={(v) => updateStock(p.id, v)} />
+                  <StockNumber stock={p.stock} />
+                  {p.stock !== null && (
+                    <button
+                      type="button"
+                      onClick={() => { setOpenAdjust(openAdjust === p.id ? null : p.id); setOpenHistory(null); }}
+                      aria-expanded={openAdjust === p.id}
+                      aria-controls={`adjust-${p.id}`}
+                      className={`flex h-11 items-center rounded-xl px-3 text-[13px] ${openAdjust === p.id ? "bg-ink text-white" : "border-[1.5px] border-[#C3D6CD]"}`}
+                    >
+                      កែតម្រូវ
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => setOpenHistory(openHistory === p.id ? null : p.id)}
+                    onClick={() => { setOpenHistory(openHistory === p.id ? null : p.id); setOpenAdjust(null); }}
                     aria-expanded={openHistory === p.id}
                     aria-controls={`history-${p.id}`}
                     className={`flex h-11 items-center gap-1.5 rounded-xl px-3 text-[13px] ${openHistory === p.id ? "bg-ink text-white" : "border-[1.5px] border-[#C3D6CD]"}`}
@@ -214,6 +319,22 @@ export function ProductAdminList({ products }: { products: AdminProduct[] }) {
                   <Toggle label="បង្ហាញលើហាង" checked={p.is_active} onChange={(v) => updateFlag(p.id, "is_active", v)} />
                 </div>
               </div>
+              {(p.stock === 0 || p.stock === null) && (
+                <Link href="/admin/finance" className="mt-2 flex h-11 items-center justify-center rounded-xl bg-[#E8F3EC] text-sm font-semibold text-leaf">
+                  ទិញចូលក្នុង Finance →
+                </Link>
+              )}
+              {openAdjust === p.id && p.stock !== null && (
+                <div id={`adjust-${p.id}`}>
+                  <StockAdjustPanel
+                    key={`${p.id}-${p.stock}`}
+                    id={p.id}
+                    stock={p.stock}
+                    onDone={(s) => onAdjusted(p.id, s)}
+                    onCancel={() => setOpenAdjust(null)}
+                  />
+                </div>
+              )}
               {openHistory === p.id && (
                 <div id={`history-${p.id}`} className="mt-2 rounded-xl bg-[#F4F7F5] px-3">
                   <StockHistory productId={p.id} version={p.stock} />

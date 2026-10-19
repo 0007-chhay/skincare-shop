@@ -160,36 +160,78 @@ export async function setProductFlag(
 }
 
 // កត់ត្រាប្រវត្តិស្តុក (បើបរាជ័យ មិនរារាំងការរក្សាទុកទេ)
+// note = មូលហេតុលម្អិត (ខូច / បាត់ / រាប់ស្តុកកែ) — ត្រូវ run step13-stock-note.sql ជាមុន
 async function logStockChange(
   product: { id: string; name_km: string; stock: number | null },
   newStock: number | null,
   reason: "manual" | "edit",
   actor: string | undefined,
+  note?: string,
 ) {
   if (newStock === null || newStock === product.stock) return;
-  const { error } = await getAdminClient().from("stock_movements").insert({
+  const db = getAdminClient();
+  const base = {
     product_id: product.id,
     product_name: product.name_km,
     change: newStock - (product.stock ?? 0),
     stock_after: newStock,
     reason,
     actor: actor ?? null,
-  });
+  };
+  const row: Record<string, unknown> = note ? { ...base, note } : base;
+  let { error } = await db.from("stock_movements").insert(row);
+  // ជួរ note មិនទាន់មាន → កត់ដោយគ្មាន note ជំនួស (កុំបាត់ប្រវត្តិ)
+  if (error && note) ({ error } = await db.from("stock_movements").insert(base as Record<string, unknown>));
   if (error) console.error("stock log:", error);
 }
 
-export async function setStock(id: string, stock: number | null): Promise<Result<{ stock: number | null }>> {
+// ───── កែតម្រូវស្តុក (ខូច · បាត់ · រាប់ស្តុកកែ) ─────
+// មិនប៉ះថ្លៃដើម (avg_cost) ទេ។ ស្តុកចូលថ្មី ត្រូវបញ្ចូលក្នុង Finance → ទិញចូល ប៉ុណ្ណោះ។
+const adjustReasons = { damaged: "ខូច", lost: "បាត់", count: "រាប់ស្តុកកែ" } as const;
+export type AdjustReason = keyof typeof adjustReasons;
+
+// damaged / lost → amount = ចំនួនដកចេញ · count → amount = ស្តុកពិតដែលរាប់បាន
+export async function adjustStock(
+  id: string,
+  reason: AdjustReason,
+  amount: number,
+): Promise<Result<{ stock: number }>> {
   const user = await getAdminUser();
   if (!user) return NOT_ALLOWED;
-  const value = stock === null ? null : Math.max(0, Math.min(99999, Math.trunc(stock)));
-  if (value !== null && !Number.isFinite(value)) return { ok: false, error: "ចំនួនមិនត្រឹមត្រូវ" };
+  if (!Object.prototype.hasOwnProperty.call(adjustReasons, reason)) return { ok: false, error: "សូមជ្រើសមូលហេតុ" };
+
+  const n = Math.trunc(Number(amount));
+  if (!Number.isFinite(n) || n < 0 || n > 99999) return { ok: false, error: "ចំនួនមិនត្រឹមត្រូវ" };
+
   const db = getAdminClient();
   const { data: before } = await db.from("products").select("id, name_km, stock").eq("id", id).maybeSingle();
-  const { error } = await db.from("products").update({ stock: value }).eq("id", id);
+  if (!before) return { ok: false, error: "រកផលិតផលមិនឃើញ" };
+  if (before.stock === null)
+    return { ok: false, error: "ផលិតផលនេះមិនទាន់រាប់ស្តុក សូមទិញចូលក្នុង Finance ជាមុន" };
+
+  let next: number;
+  if (reason === "count") {
+    next = n;
+  } else {
+    if (n < 1) return { ok: false, error: "សូមដាក់ចំនួនដកចេញ (យ៉ាងតិច ១)" };
+    if (n > before.stock) return { ok: false, error: `ស្តុកមានតែ ${before.stock} មិនអាចដក ${n} បានទេ` };
+    next = before.stock - n;
+  }
+  if (next === before.stock) return { ok: false, error: "ស្តុកដូចដែលមានស្រាប់ គ្មានអ្វីត្រូវកែ" };
+
+  // update តែពេលស្តុកនៅដដែល (ការពារករណីមានការលក់ក្នុងពេលជាមួយគ្នា)
+  const { data: updated, error } = await db
+    .from("products")
+    .update({ stock: next })
+    .eq("id", id)
+    .eq("stock", before.stock)
+    .select("id");
   if (error) return { ok: false, error: "រក្សាទុកមិនបាន" };
-  if (before) await logStockChange(before, value, "manual", user.email);
+  if (!updated?.length) return { ok: false, error: "ស្តុកទើបតែប្តូរ (ប្រហែលមានការលក់) សូម refresh រួចព្យាយាមម្តងទៀត" };
+
+  await logStockChange(before, next, "manual", user.email, adjustReasons[reason]);
   refreshShop();
-  return { ok: true, data: { stock: value } };
+  return { ok: true, data: { stock: next } };
 }
 
 export type StockMovement = {
@@ -200,18 +242,22 @@ export type StockMovement = {
   reason: "order" | "manual" | "edit" | "cancel" | "purchase";
   order_id: number | null;
   actor: string | null;
+  note: string | null;
 };
 
 export async function getStockHistory(productId: string): Promise<Result<StockMovement[]>> {
   if (!(await getAdminUser())) return NOT_ALLOWED;
-  const { data, error } = await getAdminClient()
-    .from("stock_movements")
-    .select("id, created_at, change, stock_after, reason, order_id, actor")
-    .eq("product_id", productId)
-    .order("created_at", { ascending: false })
-    .limit(30);
-  if (error) return { ok: false, error: "ទាញប្រវត្តិមិនបាន" };
-  return { ok: true, data: (data ?? []) as StockMovement[] };
+  const db = getAdminClient();
+  const cols = "id, created_at, change, stock_after, reason, order_id, actor";
+  const load = (select: string) =>
+    db.from("stock_movements").select(select).eq("product_id", productId).order("created_at", { ascending: false }).limit(30);
+
+  let res = await load(`${cols}, note`);
+  // ជួរ note មិនទាន់មាន (មិនទាន់ run step13) → ទាញដោយគ្មាន note
+  if (res.error) res = await load(cols);
+  if (res.error) return { ok: false, error: "ទាញប្រវត្តិមិនបាន" };
+  const rows = (res.data ?? []) as unknown as Partial<StockMovement>[];
+  return { ok: true, data: rows.map((r) => ({ ...r, note: r.note ?? null })) as StockMovement[] };
 }
 
 // លុបជារៀងរហូត — ប៊ូតុងនៅលើទំព័រនឹងសួរបញ្ជាក់ជាមុនសិន

@@ -65,7 +65,9 @@ export function StockHistory({ productId, version }: { productId: string; versio
               <span className="truncate">
                 {m.order_id && (m.reason === "order" || m.reason === "cancel")
                   ? `${m.reason === "order" ? "លក់" : "បោះបង់"} · Order #${m.order_id}`
-                  : reasonLabel[m.reason]}
+                  : m.reason === "manual" && m.note
+                    ? `កែតម្រូវ · ${m.note}`
+                    : reasonLabel[m.reason]}
                 {who(m.actor) && <span className="text-muted"> · {who(m.actor)}</span>}
               </span>
               <span className="text-xs text-muted">{when(m.created_at)}</span>
