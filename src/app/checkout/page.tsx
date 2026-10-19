@@ -6,6 +6,7 @@ import { useState, useTransition } from "react";
 import { checkPromo, placeOrder } from "@/app/actions";
 import { BackIcon } from "@/components/icons";
 import { useCart } from "@/lib/cart";
+import { shopContact } from "@/lib/contact";
 import { formatUSD, toKhmerNumber } from "@/lib/format";
 import { DELIVERY_FEE, provinces, type PaymentMethod } from "@/lib/shop";
 
@@ -20,6 +21,7 @@ export default function CheckoutPage() {
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [done, setDone] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
   const [promoInput, setPromoInput] = useState("");
   const [promo, setPromo] = useState<{ code: string; discount: number } | null>(null);
   const [promoError, setPromoError] = useState<string | null>(null);
@@ -45,6 +47,7 @@ export default function CheckoutPage() {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     setError(null);
+    setRateLimited(false);
     startTransition(async () => {
       const res = await placeOrder({
         lines: items.map((i) => ({ slug: i.slug, qty: i.qty })),
@@ -65,6 +68,7 @@ export default function CheckoutPage() {
         clear();
       } else {
         setError(res.error);
+        setRateLimited(res.code === "rate_limit");
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
     });
@@ -90,7 +94,19 @@ export default function CheckoutPage() {
 
       <form onSubmit={onSubmit} className="flex flex-col gap-3.5 px-4 pb-36">
         {error && (
-          <p role="alert" className="rounded-2xl bg-[#FBE4E1] p-4 text-sm leading-6 text-[#7A1D14]">{error}</p>
+          <div role="alert" className="flex flex-col gap-3 rounded-2xl bg-[#FBE4E1] p-4 text-sm leading-6 text-[#7A1D14]">
+            <p>{error}</p>
+            {rateLimited && shopContact.telegram && (
+              <a
+                href={`https://t.me/${shopContact.telegram}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex h-12 items-center justify-center rounded-2xl bg-[#1C8ACB] font-semibold text-white"
+              >
+                ✈ ទាក់ទងហាងតាម Telegram
+              </a>
+            )}
+          </div>
         )}
 
         <section className="flex flex-col gap-3.5 rounded-[20px] bg-white p-4">
@@ -193,7 +209,13 @@ export default function CheckoutPage() {
           <input name="note" maxLength={300} placeholder="ឧ. ដឹកក្រោយម៉ោង ៥ល្ងាច" className={inputClass} />
         </label>
 
-        <input name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" className="hidden" />
+        {/* ប្រអប់ផ្អាប់ (honeypot) — មនុស្សមើលមិនឃើញ ប៉ុន្តែ bot បំពេញ */}
+        <div aria-hidden="true" style={{ position: "absolute", left: "-9999px", top: "auto", width: 1, height: 1, overflow: "hidden" }}>
+          <label>
+            កុំបំពេញប្រអប់នេះ
+            <input name="website" type="text" tabIndex={-1} autoComplete="off" />
+          </label>
+        </div>
 
         <div className="fixed inset-x-0 bottom-0 z-30 bg-ink pb-[max(env(safe-area-inset-bottom),16px)] text-white">
           <div className="mx-auto flex max-w-xl items-center justify-between gap-3 px-4 pt-3">

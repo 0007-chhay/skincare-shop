@@ -6,10 +6,11 @@ import { evaluatePromo, normalizeCode, promoErrors, type PromoCode } from "@/lib
 import { LOW_STOCK } from "@/lib/stock";
 import { DELIVERY_FEE, normalizePhone, paymentLabels, provinces, type PaymentMethod } from "@/lib/shop";
 import { getAdminClient } from "@/lib/supabase-admin";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { headers } from "next/headers";
 import { escapeHtml, sendTelegram, sendTelegramPhoto } from "@/lib/telegram";
 
-type Result<T> = { ok: true; data: T } | { ok: false; error: string };
+type Result<T> = { ok: true; data: T } | { ok: false; error: string; code?: "rate_limit" };
 
 const clean = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
@@ -82,8 +83,28 @@ export type OrderInput = {
   website?: string; // honeypot — មនុស្សមើលមិនឃើញ មានតែ bot ប៉ុណ្ណោះដែលបំពេញ
 };
 
+// ───── ការពារ order ក្លែង ─────
+// ចំនួន order អតិបរមាក្នុងមួយ IP ក្នុង ២៤ ម៉ោង — ប្តូរបានដោយមិនកែកូដ៖
+// Vercel → Settings → Environment Variables → ORDER_LIMIT_PER_IP_PER_DAY (ឧ. 10)
+const ORDER_LIMIT_PER_IP_PER_DAY = Math.max(1, Math.trunc(Number(process.env.ORDER_LIMIT_PER_IP_PER_DAY)) || 5);
+const RATE_LIMIT_MESSAGE =
+  "បណ្តាញរបស់អ្នកបានបញ្ជាទិញច្រើនរួចហើយថ្ងៃនេះ។ សូមរង់ចាំបន្តិច ហើយព្យាយាមម្តងទៀត ឬទាក់ទងហាងតាម Telegram ដើម្បីបញ្ជាទិញ។";
+
+// កត់ IP ជា hash (មិនរក្សា IP ដើមទេ)។ គ្មាន IP (ឧ. ពេលតេស្តលើ localhost) → មិនកំណត់ចំនួន
+async function clientIpHash(): Promise<string | null> {
+  const h = await headers();
+  const ip = (h.get("x-forwarded-for")?.split(",")[0] ?? h.get("x-real-ip") ?? "").trim();
+  if (!ip) return null;
+  const salt = process.env.IP_HASH_SALT || process.env.SUPABASE_SERVICE_ROLE_KEY || "oss-skincare";
+  return createHmac("sha256", salt).update(ip).digest("hex").slice(0, 32);
+}
+
 export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: number; total: number; receiptKey: string }>> {
-  if (input.website) return { ok: false, error: "មិនអាចបញ្ជាទិញបានទេ" };
+  // Honeypot: មានតែ bot ប៉ុណ្ណោះដែលបំពេញប្រអប់លាក់ → ធ្វើដូចជោគជ័យ តែមិនបង្កើតអ្វីទាំងអស់
+  if (input.website) {
+    console.warn("honeypot: bot order blocked");
+    return { ok: true, data: { orderId: 0, total: 0, receiptKey: randomBytes(12).toString("hex") } };
+  }
 
   const name = clean(input.name, 80);
   const phone = normalizePhone(clean(input.phone, 20));
@@ -102,6 +123,21 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
   if (mapLink && !/^https?:\/\//.test(mapLink)) return { ok: false, error: "Link ទីតាំងមិនត្រឹមត្រូវ" };
 
   const db = getAdminClient();
+
+  // Rate limit: រាប់ order ពី IP នេះក្នុង ២៤ ម៉ោងចុងក្រោយ (រួមទាំង order ដែលបោះបង់)
+  const ipHash = await clientIpHash();
+  if (ipHash) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count, error: limitError } = await db
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("ip_hash", ipHash)
+      .gte("created_at", since);
+    // បើ query បរាជ័យ (ឧ. ជួរ ip_hash មិនទាន់មាន) មិនរារាំងអតិថិជនទេ
+    if (limitError) console.error("rate limit:", limitError.message);
+    else if ((count ?? 0) >= ORDER_LIMIT_PER_IP_PER_DAY) return { ok: false, error: RATE_LIMIT_MESSAGE, code: "rate_limit" };
+  }
+
   const priced = await priceCart(input.lines);
   if (!priced.ok) return priced;
   const { items, rows, subtotal } = priced.data;
@@ -122,9 +158,7 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
 
   const receiptKey = randomBytes(12).toString("hex");
 
-  const { data: order, error: insertError } = await db
-    .from("orders")
-    .insert({
+  const orderRow: Record<string, unknown> = {
       receipt_token: receiptKey,
       customer_name: name,
       phone,
@@ -140,9 +174,17 @@ export async function placeOrder(input: OrderInput): Promise<Result<{ orderId: n
       promo_code: promoCode || null,
       delivery_fee: DELIVERY_FEE,
       total,
-    })
+  };
+  // ip_hash = ជួរសម្រាប់កំណត់ចំនួន order ក្នុងមួយ IP (ត្រូវ run step14-order-ratelimit.sql)
+  let { data: order, error: insertError } = await db
+    .from("orders")
+    .insert(ipHash ? { ...orderRow, ip_hash: ipHash } : orderRow)
     .select("id")
     .single();
+  // ជួរ ip_hash មិនទាន់មាន → រក្សា order ដោយគ្មាន ip_hash (កុំបាត់ order របស់អតិថិជន)
+  if (insertError && /ip_hash/.test(insertError.message ?? "")) {
+    ({ data: order, error: insertError } = await db.from("orders").insert(orderRow).select("id").single());
+  }
   if (insertError || !order) {
     console.error(insertError);
     return { ok: false, error: "មិនអាចរក្សាទុក order បានទេ សូមព្យាយាមម្តងទៀត" };
