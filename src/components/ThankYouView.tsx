@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { formatUSD } from "@/lib/format";
 import { ReceiptUpload } from "./ReceiptUpload";
 
@@ -43,6 +43,11 @@ const NoteIcon = ({ className = "size-4" }: { className?: string }) => (
 const Sparkle = ({ className }: { className: string }) => (
   <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden="true">
     <path d="M12 0c.6 5.6 2.8 8.4 8.4 9-5.6.6-7.8 2.8-8.4 8.4C11.4 11.8 9.2 9.6 3.6 9 9.2 8.4 11.4 5.6 12 0z" />
+  </svg>
+);
+const DownloadIcon = ({ className = "size-5" }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+    <path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
@@ -196,28 +201,79 @@ function ContactButtons({ orderNo, total, contact }: { orderNo: string | null; t
   );
 }
 
-function CopyCode({ orderNo }: { orderNo: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={async () => {
+// ───────── ប៊ូតុងរក្សាទុកកាតជារូបភាព ─────────
+function SaveImageButton({ targetRef, orderNo }: { targetRef: RefObject<HTMLDivElement | null>; orderNo: string | null }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSave() {
+    const node = targetRef.current;
+    if (!node || busy) return;
+    setBusy(true);
+    setError(null);
+    setDone(false);
+    try {
+      const { toBlob } = await import("html-to-image");
+      const opts = { pixelRatio: 2, cacheBust: true, backgroundColor: "#FFF5F3" };
+      await toBlob(node, opts); // ហៅមួយដងដើម្បីឱ្យ font ផ្ទុករួច
+      const blob = await toBlob(node, opts);
+      if (!blob) throw new Error("no image");
+
+      const name = `order-${orderNo ?? "receipt"}.png`;
+      const file = new File([blob], name, { type: "image/png" });
+
+      // ទូរស័ព្ទ: បើកម៉ឺនុយចែករំលែក → ជ្រើស "Save Image / រក្សាទុករូបភាព"
+      const isTouch = window.matchMedia("(pointer: coarse)").matches;
+      if (isTouch && typeof navigator.canShare === "function" && navigator.canShare({ files: [file] })) {
         try {
-          await navigator.clipboard.writeText(`#${orderNo}`);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } catch {}
-      }}
-      className="h-12 w-full rounded-2xl bg-white font-semibold text-[#5A1F31] shadow-sm"
-    >
-      {copied ? "✓ បានចម្លងលេខកូដ" : `ចម្លងលេខកូដ #${orderNo}`}
-    </button>
+          await navigator.share({ files: [file] });
+          setDone(true);
+          return;
+        } catch (e) {
+          if ((e as Error).name === "AbortError") return; // អតិថិជនបិទម៉ឺនុយ
+          // បើចែករំលែកមិនបាន → ធ្លាក់ទៅទាញយកផ្ទាល់
+        }
+      }
+
+      // កុំព្យូទ័រ / ទូរស័ព្ទដែលមិនគាំទ្រ share: ទាញយកជាឯកសារ
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setDone(true);
+    } catch {
+      setError("មិនអាចរក្សាទុកបានទេ សូមថតអេក្រង់ដោយដៃជំនួស។");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-2">
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={busy}
+        className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-[#5A1F31] text-base font-semibold text-white shadow-[0_8px_20px_rgba(90,31,49,0.25)] disabled:opacity-60"
+      >
+        <DownloadIcon />
+        {busy ? "កំពុងរៀបចំរូប..." : done ? "✓ រក្សាទុកហើយ (ចុចម្តងទៀតបាន)" : "📸 រក្សាទុកកាតជារូបភាព"}
+      </button>
+      <p className="text-center text-xs text-[#9A7A82]">រក្សាទុកទុកជាភស្តុតាងនៃការបញ្ជាទិញរបស់អ្នក</p>
+      {error && <p role="alert" className="text-center text-xs text-[#A3261B]">{error}</p>}
+    </div>
   );
 }
 
 export function ThankYouView(p: Props) {
   const storageKey = p.orderNo ? `receipt-sent-${p.orderNo}` : null;
   const [sent, setSent] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     try {
@@ -233,14 +289,16 @@ export function ThankYouView(p: Props) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // ✅ រួចរាល់ — កាតស្អាតសម្រាប់ថតអេក្រង់
+  // ✅ រួចរាល់ — កាតស្អាតសម្រាប់រក្សាទុក
   if (!p.isKhqr || sent) {
     return (
       <main className="min-h-dvh bg-[#FFF5F3]">
         <div className="mx-auto flex max-w-md flex-col items-center gap-4 px-4 py-8">
-          <ReceiptCard orderNo={p.orderNo} total={p.total} isKhqr={p.isKhqr} order={p.order} contact={p.contact} />
-          <p className="rounded-full bg-white px-4 py-2 text-xs text-[#7A3346] shadow-sm">📸 ថតរូបអេក្រង់កាតនេះទុក ជាភស្តុតាង</p>
-          {p.orderNo && <CopyCode orderNo={p.orderNo} />}
+          {/* ផ្នែកដែលនឹងក្លាយជារូបភាព (មានគែមពណ៌ក្រែមដើម្បីឱ្យស្អាត) */}
+          <div ref={cardRef} className="w-full bg-[#FFF5F3] p-3">
+            <ReceiptCard orderNo={p.orderNo} total={p.total} isKhqr={p.isKhqr} order={p.order} contact={p.contact} />
+          </div>
+          <SaveImageButton targetRef={cardRef} orderNo={p.orderNo} />
           <ContactButtons orderNo={p.orderNo} total={p.total} contact={p.contact} />
           <Link href="/" className="flex h-12 w-full items-center justify-center rounded-2xl border-[1.5px] border-[#5A1F31] font-semibold text-[#5A1F31]">
             ត្រឡប់ទៅហាងវិញ
